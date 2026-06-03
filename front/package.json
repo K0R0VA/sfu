@@ -1,0 +1,16 @@
+{
+  "name": "webrtc-front",
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build"
+  },
+  "devDependencies": {
+    "vite": "^8.0.16",
+    "@vitejs/plugin-vue": "6.0.7"
+  },
+  "dependencies": {
+    "vue": "3.5.35"
+  }
+}

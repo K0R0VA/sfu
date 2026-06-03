@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use axum::response::Response;
 use futures_util::{SinkExt, StreamExt};
+use tower_http::services::ServeDir;
 use uuid::Uuid;
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::setting_engine::SettingEngine;
@@ -22,7 +23,6 @@ pub mod user;
 
 use axum::{
     routing::get,
-    response::Html,
     Router,
     extract::{State, WebSocketUpgrade},
     extract::ws::WebSocket,
@@ -35,9 +35,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
     let room_actor = Room::default().start();
     let app = Router::new()
-        .route("/", get(|| async { 
-            Html(std::fs::read_to_string("index.html").unwrap_or_else(|_| "index.html not found".to_string())) 
-        }))
+        .fallback_service(
+            ServeDir::new("front/dist")
+                .append_index_html_on_directories(true)
+        )
         .route("/ws", get(ws_handler))
         .with_state(room_actor);
     // 3. Запускаем сервер Axum на одном порту 8080
