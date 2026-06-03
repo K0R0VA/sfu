@@ -1,17 +1,14 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{sync::Arc};
 use axum::extract::ws::{Message, WebSocket};
 use futures_util::{SinkExt, stream::SplitSink};
-use webrtc::{peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription}, rtp::packet::Packet, rtp_transceiver::{RTCRtpTransceiverInit, rtp_transceiver_direction::RTCRtpTransceiverDirection}, track::track_local::{TrackLocalWriter, track_local_static_rtp::TrackLocalStaticRTP}};
+use webrtc::{api::media_engine::MIME_TYPE_VP8, peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription}, rtp::packet::Packet, rtp_transceiver::{RTCRtpTransceiverInit, rtp_codec::RTCRtpCodecCapability, rtp_transceiver_direction::RTCRtpTransceiverDirection}, track::track_local::{TrackLocalWriter, track_local_static_rtp::TrackLocalStaticRTP}};
 use crate::{actor::{Actor, Addr, Ctx}, error::Error, room::{Peer, Room, RoomMessage}};
 
 pub struct User {
     pub room: Addr<Room>,
-    pub joined_room: bool,
     pub peer_id: String,
     pub ws_tx: SplitSink<WebSocket, Message>,
     pub peer_connection: Arc<RTCPeerConnection>,
-    pub local_track: Arc<TrackLocalStaticRTP>,
-    pub subscriptions: HashMap<String, Arc<TrackLocalStaticRTP>>
 }
 
 pub enum UserMessage {
@@ -20,11 +17,8 @@ pub enum UserMessage {
     },
     ConnectToUser {
         speaker_id: String,
-        track: Arc<TrackLocalStaticRTP>
-    },
-    Broadcast {
-        speaker_id: String,
         stream: tokio::sync::broadcast::Receiver<Packet>,
+        codec_mime_type: String,
     }
 }
 
@@ -33,37 +27,16 @@ impl Actor for User {
     async fn handle(&mut self, ctx: &Ctx<'_, Self>, msg: Self::Message) {
         match msg {
             UserMessage::Websocket { message } => {
-                if let Err(e) = self.handle_ws_message(ctx, message).await {
+                if let Err(e) = self.handle_ws_message(message).await {
                     println!("handle_ws_message failed {:?}", e);
-                    if self.joined_room {
-                        let _ = self.room.send(RoomMessage::Leave { peer_id: self.peer_id.clone() }).await;
-                    }
                 }
             },
-            UserMessage::ConnectToUser { speaker_id, track } => {
-                if let Err(e) = self.connect_to_user(track, &speaker_id).await {
+            UserMessage::ConnectToUser { speaker_id, stream, codec_mime_type } => {
+                if let Err(e) = self.connect_to_user(&speaker_id, stream, codec_mime_type).await {
                     println!("handle_ws_message failed {:?}", e);
                     let _ = self.room.send(RoomMessage::Leave { peer_id: self.peer_id.clone() }).await;
                 }
-            }
-            UserMessage::Broadcast { mut stream,speaker_id } => {
-                let local_track = self.local_track.clone();
-                let peer_id = self.peer_id.clone();
-                tokio::spawn(async move {
-                    let mut packet_count = 0;
-                    while let Ok(packet) = stream.recv().await {
-                        packet_count += 1;
-                        if packet_count % 100 == 0 {
-                            println!(
-                                "📤 [МЕДИА-ВЫХОД] Актор {} пересылает 100-й пакет соседа в сеть. Seq={}", 
-                                peer_id, packet.header.sequence_number
-                            );
-                        }
-                        if let Err(e) = local_track.write_rtp(&packet).await {
-                            tracing::error!("received error from write_rtp {e}");
-                        }
-                    }
-                });
+                println!("👤 [UserActor] Участник {} подписался на {}", self.peer_id, speaker_id);
             }
         }
     }   
@@ -76,7 +49,7 @@ impl Actor for User {
 }
 
 impl User {
-    async fn handle_ws_message(&mut self, ctx: &Ctx<'_, Self>, message: Result<Message, Error>) -> Result<(), Error> {
+    async fn handle_ws_message(&mut self, message: Result<Message, Error>) -> Result<(), Error> {
         let text = match message? {
             Message::Close(_) => {
                 let _ = self.room.send(RoomMessage::Leave { peer_id: self.peer_id.clone() }).await;
@@ -87,13 +60,6 @@ impl User {
         };
         let sdp: RTCSessionDescription = serde_json::from_str(&text)?;
         self.peer_connection.set_remote_description(sdp).await?;
-        if !self.joined_room {
-            let _ = self.room.send(RoomMessage::Join { peer_id: self.peer_id.clone(), peer: Peer {
-                user: ctx.addr.clone(),
-                track: self.local_track.clone()
-            } }).await;
-            self.joined_room = true;
-        }
         let answer = self.peer_connection.create_answer(None).await?;
         let mut gather_complete = self.peer_connection.gathering_complete_promise().await;
         self.peer_connection.set_local_description(answer).await?;
@@ -105,11 +71,44 @@ impl User {
         }
         Ok(())
     }
-    async fn connect_to_user(&mut self, track: Arc<TrackLocalStaticRTP>, speaker_id: &str) -> Result<(), Error> {
-        self.peer_connection.add_transceiver_from_track(
-                track as Arc<_>,
-                Some(RTCRtpTransceiverInit { direction: RTCRtpTransceiverDirection::Sendonly, send_encodings: vec![] })
-            ).await?;
+    async fn connect_to_user(&mut self, speaker_id: &str, mut stream: tokio::sync::broadcast::Receiver<Packet>, codec_mime_type: String) -> Result<(), Error> {
+        let output_track: Arc<TrackLocalStaticRTP> = Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: codec_mime_type,
+                ..Default::default()
+            },
+            "video".to_owned(),
+            speaker_id.to_string(),
+        ));
+        let rtp_sender = self.peer_connection.add_track(
+            output_track.clone() as Arc<_>,
+        ).await?;
+        tokio::spawn(async move {
+            let mut rtcp_buf = [0u8; 1500];
+            while let Ok((_, _)) = rtp_sender.read(&mut rtcp_buf).await {}
+        });
+        let peer_id = self.peer_id.clone();
+        tokio::spawn(async move {
+            use tokio::sync::broadcast::error::RecvError;
+            loop {
+                match stream.recv().await {
+                    // Сценарий 1: Пакет успешно получен — шлем его в сеть!
+                    Ok(packet) => {
+                        if let Err(_) = output_track.write_rtp(&packet).await {
+                            println!("❌ Сетевое соединение с {} закрылось, тушим бродкаст", peer_id);
+                            break; 
+                        }
+                    }
+                    Err(RecvError::Lagged(skipped_packets)) => {
+                        println!("⚠️ [SFU БУФЕР] Читатель {} отстал! Пропущено пакетов: {}", peer_id, skipped_packets);
+                    }
+                    Err(RecvError::Closed) => {
+                        println!("🛑 Стример закрыл трансляцию, выходим.");
+                        break;
+                    }
+                }
+            }
+        });
         let notice = serde_json::json!({
             "type": "peer_joined",
             "peer_id": speaker_id

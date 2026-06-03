@@ -102,21 +102,6 @@
                     console.log(`🎯 Рендерим окно для пользователя: ${remotePeerId}`);
                     createVideoElement(remotePeerId, remoteStream, false);
                 }
-                setInterval(async () => {
-                    if (pc.signalingState === "closed") return;
-                    const stats = await pc.getStats();
-                    stats.forEach(report => {
-                        // Ищем входящий видеопоток (inbound-rtp)
-                        if (report.type === "inbound-rtp" && report.kind === "video") {
-                            console.log(
-                                `📊 [БРАУЗЕР СТАТС] Получено пакетов: ${report.packetsReceived}, ` +
-                                `Потеряно пакетов: ${report.packetsLost}, ` +
-                                `Текущий битрейт (байт): ${report.bytesReceived}, ` +
-                                `Декодировано кадров: ${report.framesDecoded}`
-                            );
-                        }
-                    });
-                }, 2000)
             };
             let makingOffer = false;
 
@@ -147,19 +132,7 @@
                     const videoTrack = stream.getVideoTracks()[0];
                     stream_id = videoTrack.id;
                     stream.getTracks().forEach(track => {
-                        const sender = pc.addTrack(track, stream);
-                        
-                        // 🔥 ХАК ДЛЯ МГНОВЕННОГО ОТВИСАНИЯ:
-                        // Заставляем кодек браузера принудительно выплевывать 
-                        // ключевой кадр (Keyframe) каждые 2-3 секунды!
-                        if (track.kind === 'video') {
-                            const parameters = sender.getParameters();
-                            if (!parameters.encodings) parameters.encodings = [{}];
-                            
-                            // Задаем принудительную генерацию ключевых кадров часто
-                            parameters.encodings[0].maxBitrate = 1200000; // 1.2 Mbps для четкости
-                            sender.setParameters(parameters).catch(e => console.error(e));
-                        }
+                        pc.addTrack(track, stream);
                     })
                     createVideoElement(peer_id, stream, true);
                 }
