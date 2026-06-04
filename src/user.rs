@@ -118,7 +118,7 @@ impl User {
             }
         });
         let notice = serde_json::json!({
-            "type": "peer_joined",
+            "type": "peer_join",
         });
         self.ws_tx.send(Message::Text(notice.to_string().into())).await?;
         Ok(())

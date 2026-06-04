@@ -4,7 +4,9 @@ import { UserWebsocket } from './websocket';
 export function connect_websocket(users, isJoined, isConnecting, roomStatus) {
   isConnecting.value = true;
   roomStatus.value = "Запрос доступа к камере...";
-  new UserWebsocket(users, roomStatus, isConnecting, isJoined)
+  const ws = new UserWebsocket(users, roomStatus, isConnecting, isJoined);
+  ws.init();
+  return ws;
 }
 
 

@@ -20,17 +20,34 @@
         <span class="status-text">{{ roomStatus }}</span>
       </div>
 
-      <button 
-        @click="$emit('join')"
-        :disabled="isJoined || isConnecting" 
-        class="join-btn"
-        :class="{ 'joined': isJoined, 'connecting': isConnecting }"
-      >
-        <span v-if="!isConnecting && !isJoined" class="btn-icon">🎥</span>
-        <div v-if="isConnecting" class="spinner"></div>
-        <span v-if="isJoined" class="btn-icon">✓</span>
-        <span>{{ buttonText }}</span>
-      </button>
+      <div class="buttons">
+        <button 
+          v-if="!isJoined && !isConnecting"
+          @click="$emit('join')"
+          class="join-btn"
+        >
+          <span class="btn-icon">🎥</span>
+          <span>Войти</span>
+        </button>
+        
+        <button 
+          v-if="isJoined"
+          @click="$emit('leave')"
+          class="leave-btn"
+        >
+          <span class="btn-icon">🚪</span>
+          <span>Выйти</span>
+        </button>
+        
+        <button 
+          v-if="isConnecting"
+          class="join-btn connecting"
+          disabled
+        >
+          <div class="spinner"></div>
+          <span>Подключение</span>
+        </button>
+      </div>
     </div>
   </header>
 </template>
@@ -44,7 +61,7 @@ const props = defineProps({
   roomStatus: String
 });
 
-const emit = defineEmits(['join']);
+const emit = defineEmits(['join', 'leave']);
 
 const buttonText = computed(() => {
   if (props.isConnecting) return 'Подключение';
