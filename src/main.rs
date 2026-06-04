@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use axum::response::Response;
@@ -119,9 +120,10 @@ async fn try_connect_websocket(
     let peer_connection = Arc::new(api.new_peer_connection(config).await?);
     let user = User {
         peer_connection: peer_connection.clone(),
-        peer_id: peer_id.to_string(),
+        peer_id: peer_id,
         room: room.clone(),
         ws_tx,
+        subscriptions: HashMap::new()
     }.start();
     user.add_stream(ws_rx, |msg|
         actor::StreamItem::Next(user::UserMessage::Websocket {
@@ -152,7 +154,7 @@ async fn try_connect_websocket(
                 codec_mime_type,
                 stream,
                 user
-            }, peer_id: peer_id.to_string() }).await;
+            }, peer_id }).await;
             tokio::spawn(async move {
                 loop {
                     let r = track.read_rtp().await;
@@ -170,7 +172,6 @@ async fn try_connect_websocket(
                         }
                     }
             });
-            
         })
     }));
     

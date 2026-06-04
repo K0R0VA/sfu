@@ -1,8 +1,10 @@
 <template>
   <div v-if="users.length === 0" class="empty-state">
-    <div class="empty-icon">🎥</div>
-    <h3>Комната пуста</h3>
-    <p>Нажмите кнопку выше, чтобы запустить камеру и подключиться к акторам Rust.</p>
+    <div class="empty-state__content">
+      <div class="empty-state__icon">🎥</div>
+      <h3>Никого нет в комнате</h3>
+      <p>Нажмите «Войти», чтобы начать трансляцию</p>
+    </div>
   </div>
 
   <div v-else class="video-grid">
@@ -10,7 +12,7 @@
       v-for="peer in users" 
       :key="peer.id"
       :peer="peer"
-      @set-video-src="(el) => emit('set-video-src', el, peer.stream)"
+      @set-video-src="$emit('set-video-src', $event, peer.stream)"
     />
   </div>
 </template>
@@ -18,14 +20,14 @@
 <script setup>
 import VideoCard from './video_card.vue';
 
-const props = defineProps({
+defineProps({
   users: {
     type: Array,
     required: true
   }
 });
 
-const emit = defineEmits(['set-video-src']);
+defineEmits(['set-video-src']);
 </script>
 
 <style src="../styles/video-grid.css" scoped></style>

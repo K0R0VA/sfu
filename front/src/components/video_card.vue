@@ -1,20 +1,27 @@
 <template>
-  <div 
-    class="video-card"
-    :class="{ 'local-card': peer.isLocal }"
-  >
-    <div class="video-wrapper">
+  <div class="video-card" :class="{ 'video-card--local': peer.isLocal }">
+    <div class="video-card__wrapper">
       <video 
         :ref="(el) => emit('set-video-src', el, peer.stream)"
         autoplay 
         playsinline 
         webkit-playsinline
         :muted="true"
+        class="video-card__player"
       ></video>
-    </div>
-    <div class="peer-meta">
-      <span class="role-dot" :class="{ local: peer.isLocal }"></span>
-      <span class="peer-id">{{ peer.isLocal ? 'Вы' : 'Сосед' }}: {{ peer.id.slice(0, 8) }}...</span>
+      
+      <div class="video-card__overlay">
+        <div class="video-card__badge" :class="{ 'badge-local': peer.isLocal }">
+          <span class="badge-dot"></span>
+          <span class="badge-text">{{ peer.isLocal ? 'Вы' : 'Участник' }}</span>
+        </div>
+        <div class="video-card__id">{{ peer.id.slice(0, 8) }}</div>
+      </div>
+      
+      <div class="video-card__status" v-if="peer.isLocal">
+        <div class="status-pulse"></div>
+        <span>Трансляция</span>
+      </div>
     </div>
   </div>
 </template>

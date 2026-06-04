@@ -6,8 +6,11 @@ pub trait Actor: Sized + Send + 'static {
     fn handle(&mut self, ctx: &mut Ctx<'_, Self>, m: Self::Message) -> impl Future<Output = ()> + Send;
     fn starting(&mut self, ctx: &Ctx<'_, Self>) -> impl Future<Output = ()> + Send;
     fn stopping(&mut self, ctx: &Ctx<'_, Self>) -> impl Future<Output = ()> + Send;
-    fn stop(&mut self, ctx: &mut Ctx<'_, Self>) {
-        ctx.should_stop = true;
+    fn stop(&mut self, ctx: &mut Ctx<'_, Self>) -> impl Future<Output = ()> + Send {
+        async move {
+            ctx.should_stop = true;
+            self.stopping(ctx).await;
+        }
     }
     fn start(self) -> Addr<Self> {
         Addr::spawn(self, 32)

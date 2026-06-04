@@ -1,11 +1,12 @@
 use std::{collections::HashMap};
+use uuid::Uuid;
 use webrtc::{rtp::packet::Packet};
 
 use crate::{actor::{Actor, Addr, Ctx}, user::{User, UserMessage}};
 
 #[derive(Default)]
 pub struct Room {
-    peers: HashMap<String, Peer>
+    peers: HashMap<Uuid, Peer>
 }
 
 pub struct Peer {
@@ -17,12 +18,12 @@ pub struct Peer {
 
 pub enum RoomMessage {
     Join {
-        peer_id: String,
+        peer_id: Uuid,
         peer: Peer
     },
     // Выход пользователя
     Leave {
-        peer_id: String,
+        peer_id: Uuid,
     },
 }
 
@@ -35,7 +36,7 @@ impl Actor for Room {
                 // old user receive new stream
                 for (_, Peer { user, .. }) in self.peers.iter() {
                     let _ = user.send(UserMessage::ConnectToUser { 
-                        speaker_id: peer_id.to_string(), 
+                        speaker_id: peer_id, 
                         stream: stream.resubscribe(),
                         codec_mime_type: codec_mime_type.clone()
                     }).await;
@@ -54,6 +55,9 @@ impl Actor for Room {
             RoomMessage::Leave { peer_id } => {
                 println!("❌ [RoomActor] Участник {} вышел из комнаты", peer_id);
                 self.peers.remove(&peer_id);
+                for (_, Peer { user, .. }) in self.peers.iter() {
+                    let _ = user.send(UserMessage::DisconnectFromUser { speaker_id: peer_id }).await;
+                }
             }
         }
     }   
