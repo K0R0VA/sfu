@@ -1,0 +1,95 @@
+.main-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 0;
+  border-bottom: 1px solid #1f1f23;
+  margin-bottom: 24px;
+}
+
+.logo-zone {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.logo-zone h1 {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+  background: linear-gradient(90deg, #00ea91, #00bfff);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.live-indicator {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background-color: #ef4444;
+  box-shadow: 0 0 8px #ef4444;
+  transition: all 0.3s ease;
+}
+
+.live-indicator.connecting {
+  background-color: #f59e0b;
+  box-shadow: 0 0 12px #f59e0b;
+  animation: pulse 1.5s infinite;
+}
+
+.live-indicator.joined {
+  background-color: #00ea91;
+  box-shadow: 0 0 12px #00ea91;
+  animation: pulse 2s infinite;
+}
+
+.status-badge {
+  font-size: 13px;
+  color: #9ca3af;
+  background: #16161a;
+  padding: 6px 16px;
+  border-radius: 20px;
+  border: 1px solid #24242b;
+}
+
+.action-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 24px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  border-radius: 8px;
+  background: #00ea91;
+  color: #0a0a0c;
+  transition: transform 0.1s ease, background-color 0.2s ease;
+}
+
+.action-btn:hover:not(:disabled) {
+  background: #00cc7e;
+  transform: translateY(-1px);
+}
+
+.action-btn:disabled {
+  background: #1f1f23;
+  color: #4b5563;
+  cursor: not-allowed;
+}
+
+.action-btn.active {
+  background: #24242b;
+  color: #00ea91;
+  border: 1px solid #00ea91;
+  cursor: default;
+}
+
+.spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(0, 0, 0, 0.1);
+  border-top-color: currentcolor;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
