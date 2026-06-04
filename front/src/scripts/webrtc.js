@@ -10,13 +10,12 @@ export class PeerConnection {
                 }
             ] 
         });
-        this.stream_id = '';
-        pc.ontrack = ({ streams }) => {
+        this.addTracks = false;
+        pc.ontrack = ({ streams, track }) => {
             const remoteStream = streams[0];
             const rawId = remoteStream.id;
-            console.log('rawId: ', rawId, '; stream_id: ', this.stream_id)
-            if (rawId !== this.stream_id) {
-                console.log
+            console.log(this.addTracks);
+            if (this.addTracks) {
                 users.value.push({
                     id: rawId,
                     stream: remoteStream,
@@ -31,7 +30,7 @@ export class PeerConnection {
         };
         this.pc = pc
     }
-    set_stream_id(stream_id) {
-        this.stream_id = stream_id;
+    allowAddTracks() {
+        this.addTracks = true;
     }
 }

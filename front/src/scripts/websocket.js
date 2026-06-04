@@ -11,38 +11,40 @@ export class UserWebsocket {
             ws.onmessage = async (event) => {
                 const message = JSON.parse(event.data);
                 switch (message.type) {
-                    case 'welcome': {
-                        this.peer_id = message.assigned_peer_id;
-                        roomStatus.value = "Получение медиапотока...";
-                        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-                        const videoTrack = stream.getVideoTracks()[0];
-                        peer_connection.set_stream_id(this.peer_id);
-                        stream.getTracks().forEach(track => {
-                            peer_connection.pc.addTrack(track, stream);
-                        });
-                        users.value.push({
-                            id: this.peer_id,
-                            stream,
-                            isLocal: true
-                        });
-                        isJoined.value = true;
-                        isConnecting.value = false;
-                        roomStatus.value = "Подключено";
+                case 'welcome': {
+                    this.peer_id = message.assigned_peer_id;
+                    roomStatus.value = "Получение медиапотока...";
+                    const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+                    const track = stream.getVideoTracks()[0];
+                    peer_connection.pc.addTrack(track, stream);
+                    users.value.push({
+                        id: this.peer_id,
+                        stream,
+                        isLocal: true
+                    });
+                    isJoined.value = true;
+                    isConnecting.value = false;
+                    roomStatus.value = "Подключено";
+                    break;
+                }
+                case 'peer_joined': {
+                    console.log('peer_join');
+                    peer_connection.allowAddTracks();
+                    peer_connection.pc.addTransceiver('video', { direction: 'recvonly' });
+                    roomStatus.value = "Подключаем участника...";
+                    break;
+                }
+                case 'peer_left': {
+                    let peer_id = message.peer_id;
+                    users.value = users.value.filter(user => user.id != peer_id);
+                    break;
+                }
+                case 'answer': {
+                    if (peer_connection.pc.signalingState === "have-local-offer") {
+                        await peer_connection.pc.setRemoteDescription(new RTCSessionDescription(message));
                     }
-                    case 'peer_joined': {
-                        peer_connection.pc.addTransceiver('video', { direction: 'recvonly' });
-                        roomStatus.value = "Подключаем участника...";
-                    }
-                    case 'peer_left': {
-                        let peer_id = message.id;
-                        users.value = users.value.filter(user => user.id != peer_id);
-                    }
-                    case 'answer': {
-                        if (peer_connection.pc.signalingState === "have-local-offer") {
-                            await peer_connection.pc.setRemoteDescription(new RTCSessionDescription(message));
-                        }
-                    }
-                    default: {}
+                    break;
+                }
             }
         };
         ws.onclose = () => {

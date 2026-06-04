@@ -56,6 +56,7 @@ impl Actor for User {
                     println!("disconnect_from_user failed {:?}", e);
                     self.stop(ctx).await;
                 }
+                println!("👤 [UserActor] Участник {} отписался от {}", self.peer_id, speaker_id);
             }
         }
     }   
@@ -118,7 +119,6 @@ impl User {
         });
         let notice = serde_json::json!({
             "type": "peer_joined",
-            "peer_id": speaker_id
         });
         self.ws_tx.send(Message::Text(notice.to_string().into())).await?;
         Ok(())
