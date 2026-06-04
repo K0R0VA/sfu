@@ -28,7 +28,7 @@ pub enum RoomMessage {
 
 impl Actor for Room {
     type Message = RoomMessage;
-    async fn handle(&mut self, _ctx: &Ctx<'_, Self>, msg: Self::Message) {
+    async fn handle(&mut self, _ctx: &mut Ctx<'_, Self>, msg: Self::Message) {
         match msg {
             RoomMessage::Join { peer_id, peer } => {
                 let Peer { user, stream, codec_mime_type } = peer;
@@ -60,7 +60,10 @@ impl Actor for Room {
     async fn starting(&mut self, _: &Ctx<'_, Self>) {
         println!("🟢 [RoomActor] Комната инициализирована.");
     }
-    async fn stop(&mut self) {
+    async fn stopping(&mut self, _ctx: &Ctx<'_, Self>) {
+        for (_, Peer { user, .. }) in self.peers.iter() {
+            let _ = user.send(UserMessage::RoomClosed).await;
+        }
         println!("🔴 [RoomActor] Комната уничтожена.");
     }
 }

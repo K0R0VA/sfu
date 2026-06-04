@@ -3,29 +3,32 @@ use tokio::sync::mpsc::error::SendError;
 
 pub trait Actor: Sized + Send + 'static {
     type Message: Sized + Send + 'static;
-    fn handle(&mut self, ctx: &Ctx<'_, Self>, m: Self::Message) -> impl Future<Output = ()> + Send;
+    fn handle(&mut self, ctx: &mut Ctx<'_, Self>, m: Self::Message) -> impl Future<Output = ()> + Send;
     fn starting(&mut self, ctx: &Ctx<'_, Self>) -> impl Future<Output = ()> + Send;
-    fn stop(&mut self) -> impl Future<Output = ()> + Send;
-    fn start(mut self) -> Addr<Self> {
-        let (requests, mut messages) = tokio::sync::mpsc::channel(128);
-        let addr = Addr { requests };
-        tokio::spawn({
-            let ctx_addr = addr.clone();
-            async move {
-                let ctx = Ctx {addr: &ctx_addr};
-                self.starting(&ctx).await;
-                while let Some(message) = messages.recv().await {
-                    self.handle(&ctx, message).await;
-                }
-                self.stop().await
-            }
-        });
-        addr
+    fn stopping(&mut self, ctx: &Ctx<'_, Self>) -> impl Future<Output = ()> + Send;
+    fn stop(&mut self, ctx: &mut Ctx<'_, Self>) {
+        ctx.should_stop = true;
+    }
+    fn start(self) -> Addr<Self> {
+        Addr::spawn(self, 32)
+    }
+    fn start_with_capacity(self, capacity: usize) -> Addr<Self> {
+        Addr::spawn(self, capacity)
     }
 }
 
 pub struct Ctx< 'a, A: Actor,> {
-    pub addr: &'a Addr<A>
+    pub addr: &'a Addr<A>,
+    should_stop: bool 
+}
+
+async fn handle_messages<A: Actor>(actor: &mut A, ctx: &mut Ctx<'_, A>, mut messages: tokio::sync::mpsc::Receiver<A::Message>) {
+    while let Some(message) = messages.recv().await {
+        actor.handle(ctx, message).await;
+        if ctx.should_stop {
+            break;
+        }
+    }
 }
 
  pub struct Addr<A: Actor> {
@@ -41,6 +44,20 @@ impl<A: Actor> Clone for Addr<A> {
 }
 
 impl<A: Actor> Addr<A> {
+    fn spawn(mut actor: A, capacity: usize) -> Self {
+        let (requests, messages) = tokio::sync::mpsc::channel(capacity);
+        let addr = Addr { requests };
+        tokio::spawn({
+            let ctx_addr = addr.clone();
+            async move {
+                let mut ctx = Ctx {addr: &ctx_addr, should_stop: false};
+                actor.starting(&ctx).await;
+                handle_messages(&mut actor, &mut ctx, messages).await;
+                actor.stopping(&ctx).await;
+            }
+        });
+        addr
+    }
     pub async fn send(&self, m: <A as Actor>::Message) -> Result<(), SendError<<A as Actor>::Message>> {
         self.requests.send(m).await?;
         Ok(())
@@ -79,25 +96,30 @@ use crate::actor::{Actor, Ctx};
     pub struct TestActor;
 
     impl Actor for TestActor {
-        type Message = ();
-        async fn starting(&mut self, ctx: &Ctx<'_, Self>) {
-            println!("starting");
+        type Message = i32;
+        
+        fn handle(&mut self, ctx: &mut Ctx<'_, Self>, m: Self::Message) -> impl Future<Output = ()> + Send {
+            async move {
+                println!("{m}");
+                self.stop(ctx);
+            }
         }
-        async fn stop(&mut self) {
-            println!("stopped");
+        
+        fn starting(&mut self, ctx: &Ctx<'_, Self>) -> impl Future<Output = ()> + Send {
+            async {}
         }
-        async fn handle(&mut self, ctx: &Ctx<'_, Self>, m: Self::Message) {
-            println!("handle message")
+        
+        fn stopping(&mut self, ctx: &Ctx<'_, Self>) -> impl Future<Output = ()> + Send {
+            async {
+                println!("stopping");
+            }
         }
     }
-
-   
-
     #[tokio::test]
     async fn test() {
         let actor = TestActor;
         let addr = actor.start();
-        let _ = addr.send(()).await;
+        addr.add_stream(futures_util::stream::iter(0 .. 123), |m| crate::actor::StreamItem::Next(m));
         drop(addr);
         tokio::time::sleep(Duration::from_secs(1)).await;
     }

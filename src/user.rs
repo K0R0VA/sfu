@@ -1,8 +1,8 @@
 use std::{sync::Arc};
 use axum::extract::ws::{Message, WebSocket};
 use futures_util::{SinkExt, stream::SplitSink};
-use webrtc::{api::media_engine::MIME_TYPE_VP8, peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription}, rtp::packet::Packet, rtp_transceiver::{RTCRtpTransceiverInit, rtp_codec::RTCRtpCodecCapability, rtp_transceiver_direction::RTCRtpTransceiverDirection}, track::track_local::{TrackLocalWriter, track_local_static_rtp::TrackLocalStaticRTP}};
-use crate::{actor::{Actor, Addr, Ctx}, error::Error, room::{Peer, Room, RoomMessage}};
+use webrtc::{peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription}, rtp::packet::Packet, rtp_transceiver::{rtp_codec::RTCRtpCodecCapability}, track::track_local::{TrackLocalWriter, track_local_static_rtp::TrackLocalStaticRTP}};
+use crate::{actor::{Actor, Addr, Ctx}, error::Error, room::{Room, RoomMessage}};
 
 pub struct User {
     pub room: Addr<Room>,
@@ -19,31 +19,35 @@ pub enum UserMessage {
         speaker_id: String,
         stream: tokio::sync::broadcast::Receiver<Packet>,
         codec_mime_type: String,
-    }
+    },
+    RoomClosed
 }
 
 impl Actor for User {
     type Message = UserMessage;
-    async fn handle(&mut self, ctx: &Ctx<'_, Self>, msg: Self::Message) {
+    async fn handle(&mut self, ctx: &mut Ctx<'_, Self>, msg: Self::Message) {
         match msg {
             UserMessage::Websocket { message } => {
                 if let Err(e) = self.handle_ws_message(message).await {
                     println!("handle_ws_message failed {:?}", e);
+                    self.stop(ctx);
                 }
             },
             UserMessage::ConnectToUser { speaker_id, stream, codec_mime_type } => {
                 if let Err(e) = self.connect_to_user(&speaker_id, stream, codec_mime_type).await {
-                    println!("handle_ws_message failed {:?}", e);
-                    let _ = self.room.send(RoomMessage::Leave { peer_id: self.peer_id.clone() }).await;
+                    println!("connect_to_user failed {:?}", e);
+                    self.stop(ctx);
                 }
                 println!("👤 [UserActor] Участник {} подписался на {}", self.peer_id, speaker_id);
-            }
+            },
+            UserMessage::RoomClosed => self.stop(ctx)
         }
     }   
     async fn starting(&mut self, _: &Ctx<'_, Self>) {
         println!("🟢 [Userctor] Пользователь инициализирован.");
     }
-    async fn stop(&mut self) {
+    async fn stopping(&mut self, _: &Ctx<'_, Self>) {
+        let _ = self.room.send(RoomMessage::Leave { peer_id: self.peer_id.clone() }).await;
         println!("🔴 [UserActor] Пользователь уничтожен.");
     }
 }
