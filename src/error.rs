@@ -1,3 +1,7 @@
+use std::borrow::Cow;
+
+use tokio::sync::broadcast::error::RecvError;
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
@@ -5,5 +9,9 @@ pub enum Error {
     #[error(transparent)]
     WebRtc(#[from] webrtc::Error),
     #[error(transparent)]
-    Axum(#[from] axum::Error)
+    Axum(#[from] axum::Error),
+    #[error(transparent)]
+    Broadcast(#[from] RecvError),
+    #[error("System failed on {message}")]
+    SystemError {message: Cow<'static, str> }
 }

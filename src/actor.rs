@@ -104,15 +104,15 @@ use crate::actor::{Actor, Ctx};
         fn handle(&mut self, ctx: &mut Ctx<'_, Self>, m: Self::Message) -> impl Future<Output = ()> + Send {
             async move {
                 println!("{m}");
-                self.stop(ctx);
+                self.stop(ctx).await;
             }
         }
         
-        fn starting(&mut self, ctx: &Ctx<'_, Self>) -> impl Future<Output = ()> + Send {
+        fn starting(&mut self, _ctx: &Ctx<'_, Self>) -> impl Future<Output = ()> + Send {
             async {}
         }
         
-        fn stopping(&mut self, ctx: &Ctx<'_, Self>) -> impl Future<Output = ()> + Send {
+        fn stopping(&mut self, _ctx: &Ctx<'_, Self>) -> impl Future<Output = ()> + Send {
             async {
                 println!("stopping");
             }

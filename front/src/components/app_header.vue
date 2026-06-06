@@ -10,7 +10,7 @@
           </svg>
         </div>
         <div class="logo-text">
-          <span class="logo-title">Rust Media</span>
+          <span class="logo-title">Веб чат</span>
           <span class="logo-subtitle">SFU</span>
         </div>
       </div>

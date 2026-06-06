@@ -2,8 +2,8 @@ use std::{collections::HashMap, sync::Arc};
 use axum::extract::ws::{Message, WebSocket};
 use futures_util::{SinkExt, stream::SplitSink};
 use uuid::Uuid;
-use webrtc::{peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription}, rtp::packet::Packet, rtp_transceiver::{RTCRtpTransceiverInit, rtp_codec::RTCRtpCodecCapability, rtp_sender::RTCRtpSender, rtp_transceiver_direction::RTCRtpTransceiverDirection}, track::track_local::{TrackLocalWriter, track_local_static_rtp::TrackLocalStaticRTP}};
-use crate::{actor::{Actor, Addr, Ctx}, error::Error, room::{Room, RoomMessage}};
+use webrtc::{peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription}, rtp::packet::Packet, rtp_transceiver::{RTCRtpTransceiverInit, rtp_codec::{RTCRtpCodecCapability}, rtp_sender::RTCRtpSender, rtp_transceiver_direction::RTCRtpTransceiverDirection}, track::track_local::{TrackLocalWriter, track_local_static_rtp::TrackLocalStaticRTP}};
+use crate::{PacketStream, actor::{Actor, Addr, Ctx}, error::Error, room::{Room, RoomMessage, StreamQuality}, video_subscription::{VideoSubscription, VideoSubscriptionMessage}};
 
 pub struct User {
     pub room: Addr<Room>,
@@ -14,23 +14,131 @@ pub struct User {
 }
 
 pub struct Subscription {
+    audio_stream: Option<AudioSubscription>,
+    video_subscription: Option<Addr<VideoSubscription>>
+}
+
+impl Subscription {
+    async fn init(pc: Arc<RTCPeerConnection>, request: ConnectionRequest) -> Result<Self, Error> {
+        let mut video_subscription = None;
+        let mut audio_stream= None;
+        let kind = request.kind;
+        match kind {
+            ConnectionRequestKind::Audio => { 
+                let inner = AudioSubscription::init(&pc, request).await?;
+                let _ = audio_stream.insert(inner); 
+            },
+            ConnectionRequestKind::Video { stream_quality } => { 
+                let ConnectionRequest { speaker_id, stream, codec_mime_type, .. } = request;
+                let addr = VideoSubscription::new(pc, speaker_id, codec_mime_type, stream, stream_quality)
+                    .await?
+                    .start();
+                video_subscription = Some(addr);
+            },
+        };
+        Ok(Self {
+            video_subscription,
+            audio_stream,
+        })
+    }
+    async fn apply_request(&mut self, pc: Arc<RTCPeerConnection>, request: ConnectionRequest) -> Result<(), Error> {
+        match request.kind {
+            ConnectionRequestKind::Audio if self.audio_stream.is_none() =>{
+                let audio_subscription = AudioSubscription::init(&pc, request).await?;
+                let _ = self.audio_stream.insert(audio_subscription);
+            },
+            ConnectionRequestKind::Video { stream_quality } if self.video_subscription.is_none() => {
+                let ConnectionRequest { speaker_id, stream, codec_mime_type, .. } = request;
+                let addr = VideoSubscription::new(pc, speaker_id, codec_mime_type, stream, stream_quality)
+                    .await?
+                    .start();
+                self.video_subscription = Some(addr);
+            },
+            ConnectionRequestKind::Video { stream_quality } => {
+                if let Some(video_subscription) = &self.video_subscription {
+                    let ConnectionRequest { stream, .. } = request;
+                    let _ = video_subscription.send(VideoSubscriptionMessage::AddSubsription {
+                        quality: stream_quality, 
+                        stream
+                    }).await;
+                }
+            },
+            _ => return Ok(()),
+        };
+        Ok(())
+    }
+
+    async fn disconnect(mut self, pc: &RTCPeerConnection) -> Result<(), Error> {
+        if let Some(video_subscription) = self.video_subscription.take() {
+            let _ = video_subscription.send(VideoSubscriptionMessage::Drop).await;
+        }
+        if let Some(AudioSubscription { sender, drop }) = self.audio_stream.take() {
+            let _ = drop.send(());
+            pc.remove_track(&sender).await?;
+        }
+        Ok(())
+    }
+}
+
+pub struct AudioSubscription {
     sender: Arc<RTCRtpSender>,
     drop: tokio::sync::oneshot::Sender<()>
+}
+
+
+impl AudioSubscription {
+    pub async fn init(pc: &RTCPeerConnection, ConnectionRequest {codec_mime_type, speaker_id, mut stream, ..}: ConnectionRequest) -> Result<Self, Error> {
+        let output_track: Arc<TrackLocalStaticRTP> = Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: codec_mime_type,
+                ..Default::default()
+            },
+            Uuid::new_v4().to_string(),
+            speaker_id.to_string(),
+        ));
+        let sender = pc.add_transceiver_from_track(
+                output_track.clone() as Arc<_>,
+                Some(RTCRtpTransceiverInit { direction: RTCRtpTransceiverDirection::Sendonly, send_encodings: vec![] })
+            )
+            .await?
+            .sender()
+            .await;
+        let (drop, is_dropped) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = handle_rtp_packets(&mut stream, output_track) => {},
+                _ = is_dropped => {}
+            }
+        });
+        Ok(Self {
+            drop,
+            sender
+        })
+    }
 }
 
 pub enum UserMessage {
     Websocket {
         message: Result<Message, Error>
     },
-    ConnectToUser {
-        speaker_id: Uuid,
-        stream: tokio::sync::broadcast::Receiver<Packet>,
-        codec_mime_type: String,
-    },
+    ConnectToUser(ConnectionRequest),
     DisconnectFromUser {
         speaker_id: Uuid,
     },
     RoomClosed
+}
+
+pub struct ConnectionRequest {
+    pub speaker_id: Uuid,
+    pub stream: tokio::sync::broadcast::Receiver<Packet>,
+    pub codec_mime_type: String,
+    pub kind: ConnectionRequestKind
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ConnectionRequestKind {
+    Audio,
+    Video { stream_quality: StreamQuality }
 }
 
 impl Actor for User {
@@ -39,33 +147,34 @@ impl Actor for User {
         match msg {
             UserMessage::Websocket { message } => {
                 if let Err(e) = self.handle_ws_message(message).await {
-                    println!("handle_ws_message failed {:?}", e);
+                    tracing::error!("👤 [UserActor] UserMessage::Websocket {:?}", e);
                     self.stop(ctx).await;
                 }
             },
-            UserMessage::ConnectToUser { speaker_id, stream, codec_mime_type } => {
-                if let Err(e) = self.connect_to_user(speaker_id, stream, codec_mime_type).await {
-                    println!("connect_to_user failed {:?}", e);
+            UserMessage::ConnectToUser(request) => {
+                let speaker_id = request.speaker_id;
+                if let Err(e) = self.connect_to_user(request).await {
+                    tracing::error!("👤 [UserActor] UserMessage::ConnectToUser {:?}", e);
                     self.stop(ctx).await;
                 }
-                println!("👤 [UserActor] Участник {} подписался на {}", self.peer_id, speaker_id);
+                tracing::info!("👤 [UserActor] Участник {} подписался на {}", self.peer_id, speaker_id);
             },
             UserMessage::RoomClosed => self.stop(ctx).await,
             UserMessage::DisconnectFromUser { speaker_id } => {
                 if let Err(e) = self.disconnect_from_user(speaker_id).await {
-                    println!("disconnect_from_user failed {:?}", e);
+                    tracing::error!("👤 [UserActor] UserMessage::DisconnectFromUser {:?}", e);
                     self.stop(ctx).await;
                 }
-                println!("👤 [UserActor] Участник {} отписался от {}", self.peer_id, speaker_id);
+                 tracing::info!("👤 [UserActor] Участник {} отписался от {}", self.peer_id, speaker_id);
             }
         }
     }   
     async fn starting(&mut self, _: &Ctx<'_, Self>) {
-        println!("🟢 [Userctor] Пользователь инициализирован.");
+        tracing::info!("🟢 [Userctor] Пользователь инициализирован.");
     }
     async fn stopping(&mut self, _: &Ctx<'_, Self>) {
         let _ = self.room.send(RoomMessage::Leave { peer_id: self.peer_id.clone() }).await;
-        println!("🔴 [UserActor] Пользователь уничтожен.");
+        tracing::info!("🔴 [UserActor] Пользователь уничтожен.");
     }
 }
 
@@ -92,31 +201,18 @@ impl User {
         }
         Ok(())
     }
-    async fn connect_to_user(&mut self, speaker_id: Uuid, stream: tokio::sync::broadcast::Receiver<Packet>, codec_mime_type: String) -> Result<(), Error> {
-        let output_track: Arc<TrackLocalStaticRTP> = Arc::new(TrackLocalStaticRTP::new(
-            RTCRtpCodecCapability {
-                mime_type: codec_mime_type,
-                ..Default::default()
-            },
-            "video".to_owned(),
-            speaker_id.to_string(),
-        ));
-        let sender = self.peer_connection.add_transceiver_from_track(
-                output_track.clone() as Arc<_>,
-                Some(RTCRtpTransceiverInit { direction: RTCRtpTransceiverDirection::Sendonly, send_encodings: vec![] })
-            )
-            .await?
-            .sender()
-            .await;
-        let (drop, is_dropped) = tokio::sync::oneshot::channel();
-        self.subscriptions.insert(speaker_id, Subscription { sender, drop });
-        let peer_id = self.peer_id;
-        tokio::spawn(async move {
-            tokio::select! {
-                _ = handle_rtp_packets(peer_id, stream, output_track) => {},
-                _ = is_dropped => {}
+    async fn connect_to_user(&mut self, request: ConnectionRequest) -> Result<(), Error> {
+        match self.subscriptions.entry(request.speaker_id) {
+            std::collections::hash_map::Entry::Occupied(mut o) => {
+                let subscriprion = o.get_mut();
+                subscriprion.apply_request(self.peer_connection.clone(), request).await?;
             }
-        });
+            std::collections::hash_map::Entry::Vacant(v) => {
+                let subscription = Subscription::init(self.peer_connection.clone(), request).await?;
+                v.insert(subscription);
+                
+            }
+        }
         let notice = serde_json::json!({
             "type": "peer_join",
         });
@@ -124,9 +220,10 @@ impl User {
         Ok(())
     }
     async fn disconnect_from_user(&mut self, speaker_id: Uuid) -> Result<(), Error> {
-        let Subscription { sender, drop } = self.subscriptions.remove(&speaker_id).unwrap();
-        let _ = drop.send(());
-        self.peer_connection.remove_track(&sender).await?;
+        let subscription = self.subscriptions
+            .remove(&speaker_id)
+            .ok_or(Error::SystemError { message: "subscription not found".into() })?;
+        subscription.disconnect(&self.peer_connection).await?;
         let notice = serde_json::json!({
             "type": "peer_left",
             "peer_id": speaker_id
@@ -136,24 +233,9 @@ impl User {
     }
 }
 
-async fn handle_rtp_packets(peer_id: Uuid, mut stream: tokio::sync::broadcast::Receiver<Packet>, output_track: Arc<TrackLocalStaticRTP>) {
-    use tokio::sync::broadcast::error::RecvError;
+pub async fn handle_rtp_packets(stream: &mut PacketStream, output_track: Arc<TrackLocalStaticRTP>) -> Result<(), Error> {
     loop {
-        match stream.recv().await {
-            // Сценарий 1: Пакет успешно получен — шлем его в сеть!
-            Ok(packet) => {
-                if let Err(_) = output_track.write_rtp(&packet).await {
-                    println!("❌ Сетевое соединение с {} закрылось, тушим бродкаст", peer_id);
-                    break; 
-                }
-            }
-            Err(RecvError::Lagged(skipped_packets)) => {
-                println!("⚠️ [SFU БУФЕР] Читатель {} отстал! Пропущено пакетов: {}", peer_id, skipped_packets);
-            }
-            Err(RecvError::Closed) => {
-                println!("🛑 Стример закрыл трансляцию, выходим.");
-                break;
-            }
-        }
+        let packet = stream.recv().await?; 
+        output_track.write_rtp(&packet).await?;
     }
 }

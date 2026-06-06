@@ -20,12 +20,33 @@ export class UserWebsocket {
             case 'welcome': {
                 this.peer_id = message.assigned_peer_id;
                 this.roomStatus.value = "Получение медиапотока...";
-                const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-                stream.getTracks().forEach(track => {
-                    this.pc.addTrack(track, stream);
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: {
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 },
+                        frameRate: { ideal: 30 }
+                    },
+                    audio: {
+                        echoCancellation: true,        // Подавление эха (критически важно!)
+                        noiseSuppression: true,        // Подавление шума
+                        autoGainControl: true,         // Автоматическая регулировка громкости
+                        sampleRate: { ideal: 48000 },  // Частота дискретизации
+                        sampleSize: { ideal: 16 },     // Битность
+                        channelCount: { ideal: 1 }     // Моно (достаточно для голоса)
+                    }
                 });
-                this.users.value.push({
-                    id: this.peer_id,
+                const videoTrack = stream.getVideoTracks()[0];
+                this.peer_connection.pc.addTransceiver(videoTrack, {
+                    direction: 'sendonly',
+                    sendEncodings: [
+                        { rid: 'low',  maxBitrate: 150000,  scaleResolutionDownBy: 4.0 }, // 320x180
+                        { rid: 'mid',  maxBitrate: 500000,  scaleResolutionDownBy: 2.0 }, // 640x360
+                        { rid: 'high', maxBitrate: 2000000, scaleResolutionDownBy: 1.0 }  // 1280x720
+                    ]
+                });
+                const audioTrack = stream.getAudioTracks()[0];
+                this.peer_connection.pc.addTransceiver(audioTrack, { direction: 'sendonly' });
+                this.users.value.set(this.peer_id, {
                     stream,
                     isLocal: true
                 });
@@ -36,13 +57,13 @@ export class UserWebsocket {
             }
             case 'peer_join': {
                 this.peer_connection.pc.addTransceiver('video', { direction: 'recvonly' });
-                // this.peer_connection.pc.addTransceiver('audio', { direction: 'recvonly' });
+                this.peer_connection.pc.addTransceiver('audio', { direction: 'recvonly' });
                 this.roomStatus.value = "Подключаем участника...";
                 break;
             }
             case 'peer_left': {
                 let peer_id = message.peer_id;
-                this.users.value = this.users.value.filter(user => user.id != peer_id);
+                this.users.value.delete(peer_id);
                 break;
             }
             case 'answer': {
@@ -61,7 +82,7 @@ export class UserWebsocket {
     disconnect() {
         this.ws.close();
         this.peer_connection.pc.close();
-        this.users.value = [];
+        this.users.value.clear();
         this.isJoined.value = false;
         this.isJoined.value = false;
         this.roomStatus.value = 'Готов к подключению';
