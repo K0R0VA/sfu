@@ -113,6 +113,7 @@ async fn try_connect_websocket(
                 !iface.starts_with("docker") && !iface.starts_with("br-") && !iface.starts_with("veth")
             })
         );
+    system_engine.set_receive_mtu(1500);
     // Настраиваем API WebRTC
     let api = APIBuilder::new()
         .with_media_engine(m)
@@ -166,7 +167,7 @@ async fn try_connect_websocket(
         });
         Box::pin(async move {
             tracing::info!("[SFU] {kind} от {peer_id} подключен");
-            let (tx, stream) = tokio::sync::broadcast::channel(128);
+            let (tx, stream) = tokio::sync::broadcast::channel(32);
             let active_receiver_counter =  Arc::new(AtomicUsize::new(0));
             let stream = Arc::new(stream);
             let packet_subscription = PacketSubscription {  active_receiver_counter: active_receiver_counter.clone(), stream};
@@ -180,35 +181,22 @@ async fn try_connect_websocket(
                     peer_id 
                 },
                 RTPCodecType::Video => {
-                    let stream_quality = rid;
-                    match stream_quality {
-                        Ok(quality) => RoomMessage::AddVideoTrack { 
-                            stream: PeerStream {
-                                mime_type,
-                                packet_subscription,
-                                subscribers: HashSet::new()
-                            }, 
-                            peer_id,
-                            quality
-                        },
-                        Err(e) => {
-                            tracing::error!("SFU] {e}");
-                            return;
-                        }
+                    let quality = rid.unwrap_or(StreamQuality::High);
+                    RoomMessage::AddVideoTrack { 
+                        stream: PeerStream {
+                            mime_type,
+                            packet_subscription,
+                            subscribers: HashSet::new()
+                        }, 
+                        peer_id,
+                        quality
                     }
                 }   
             };
             let _ = room.send(mesage).await;
             tokio::spawn(async move {
-                loop {
-                    let active_receiver_count = active_receiver_counter.load(Ordering::Relaxed);
-                    if active_receiver_count == 0 { 
-                        tokio::time::sleep(Duration::from_millis(100)).await; 
-                        continue; 
-                    };
-                    if let Err(e) = forward_rtp_packets(&track, &tx).await {
-                        tracing::error!("[SFU] forward_rtp_packets {e}");
-                    }
+                if let Err(e) = forward_rtp_packets(&track, &tx, &active_receiver_counter).await {
+                    tracing::error!("[SFU] forward_rtp_packets failed {e}");
                 }
             });
         })
@@ -216,10 +204,15 @@ async fn try_connect_websocket(
     Ok(())
 }
 
-async fn forward_rtp_packets(track: &TrackRemote, channel: &PacketSender) -> Result<(), Error> {
-    let (packet, _) = track.read_rtp().await?;
-    channel.send(packet).map_err(|_| Error::SystemError { message: "failed send packet".into() })?;
-    Ok(())
+async fn forward_rtp_packets(track: &TrackRemote, channel: &PacketSender, active_receiver_counter: &AtomicUsize) -> Result<(), Error> {
+    loop {
+        let (packet, _) = track.read_rtp().await?;
+        let active_receiver_count = active_receiver_counter.load(Ordering::Relaxed);
+        if active_receiver_count == 0 {
+            continue; 
+        }
+        channel.send(packet).map_err(|_| Error::SystemError { message: "failed send packet".into() })?;
+    }
 }
 
 pub type PacketStream = Arc<tokio::sync::broadcast::Receiver<Packet>>;

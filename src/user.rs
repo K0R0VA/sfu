@@ -16,6 +16,7 @@ pub struct User {
 pub struct Subscription {
     audio_stream: Option<AudioSubscription>,
     video_subscription: Option<Addr<VideoSubscription>>,
+    notified: bool,
 }
 
 impl Subscription {
@@ -39,6 +40,7 @@ impl Subscription {
         Ok(Self {
             video_subscription,
             audio_stream,
+            notified: false
         })
     }
     async fn apply_request(&mut self, pc: Arc<RTCPeerConnection>, request: ConnectionRequest) -> Result<(), Error> {
@@ -211,11 +213,12 @@ impl User {
             std::collections::hash_map::Entry::Occupied(mut o) => {
                 let subscriprion = o.get_mut();
                 subscriprion.apply_request(self.peer_connection.clone(), request).await?;
-                if subscriprion.audio_stream.is_some() && subscriprion.video_subscription.is_some() {
+                if subscriprion.audio_stream.is_some() && subscriprion.video_subscription.is_some() && !subscriprion.notified{
                     let notice = serde_json::json!({
                         "type": "peer_join",
                     });
                     self.ws_tx.send(Message::Text(notice.to_string().into())).await?;
+                    subscriprion.notified = true;
                 }
             }
             std::collections::hash_map::Entry::Vacant(v) => {
