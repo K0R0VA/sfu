@@ -21,22 +21,29 @@ export class PeerConnection {
             roomStatus.value = `Участников: ${users.value.length}`;
         };
         this.makingOffer = false;
-        pc.onnegotiationneeded = async (event) => {
-            if (this.makingOffer) return;
-            try {
-                this.makingOffer = true;
-                const offer = await this.pc.createOffer();
-                await this.pc.setLocalDescription(offer);
-                console.log(offer);
-                ws.send(JSON.stringify(offer));
-            } catch (err) {
-                console.log(err);
-                this.makingOffer = false;
-            }
-            finally {
-                this.makingOffer = false;
-            }
-        };
-        this.pc = pc
+        this.pc = pc;
+        this.ws = ws;
+    }
+    async create_offer() {
+        if (this.makingOffer) return;
+        try {
+            console.log(this.pc.getReceivers());
+            this.makingOffer = true;
+            const offer = await this.pc.createOffer();
+            await this.pc.setLocalDescription(offer);
+            this.ws.send(JSON.stringify(offer));
+        } catch (err) {
+            console.log(err);
+            this.makingOffer = false;
+        }
+        finally {
+            this.makingOffer = false;
+        }
+    }
+    async addPeer() {
+        this.pc.addTransceiver('video', { direction: 'recvonly' });
+        this.pc.addTransceiver('audio', { direction: 'recvonly' });
+        await Promise.resolve();
+        await this.create_offer();
     }
 }

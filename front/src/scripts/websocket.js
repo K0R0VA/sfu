@@ -24,7 +24,6 @@ export class UserWebsocket {
                     video: {
                         width: { ideal: 1280 },
                         height: { ideal: 720 },
-                        frameRate: { ideal: 30 }
                     },
                     audio: {
                         echoCancellation: true,        // Подавление эха (критически важно!)
@@ -39,13 +38,30 @@ export class UserWebsocket {
                 this.peer_connection.pc.addTransceiver(videoTrack, {
                     direction: 'sendonly',
                     sendEncodings: [
-                        { rid: 'low',  maxBitrate: 150000,  scaleResolutionDownBy: 4.0 }, // 320x180
-                        { rid: 'mid',  maxBitrate: 500000,  scaleResolutionDownBy: 2.0 }, // 640x360
-                        { rid: 'high', maxBitrate: 2000000, scaleResolutionDownBy: 1.0 }  // 1280x720
+                          {
+                            rid: 'low',
+                            maxBitrate: 150000,          // Подняли с 70k для четких 180p
+                            scaleResolutionDownBy: 4.0,  // 320x180
+                            maxFramerate: 15             // Ограничение FPS экономит трафик слабых клиентов
+                            
+                        },
+                        {
+                            rid: 'mid',
+                            maxBitrate: 500000,          // Подняли с 250k для стабильных 360p
+                            scaleResolutionDownBy: 2.0,  // 640x360
+                            maxFramerate: 30
+                        },
+                        {
+                            rid: 'high',
+                            maxBitrate: 1800000,         // Подняли с 1M. Для хорошего 720p30 нужно ~1.5-2.0 Mbps
+                            scaleResolutionDownBy: 1.0,  // 1280x720
+                            maxFramerate: 30
+                        }
                     ]
                 });
                 const audioTrack = stream.getAudioTracks()[0];
                 this.peer_connection.pc.addTransceiver(audioTrack, { direction: 'sendonly' });
+                await this.peer_connection.create_offer();
                 this.users.value.set(this.peer_id, {
                     stream,
                     isLocal: true
@@ -56,8 +72,7 @@ export class UserWebsocket {
                 break;
             }
             case 'peer_join': {
-                this.peer_connection.pc.addTransceiver('video', { direction: 'recvonly' });
-                this.peer_connection.pc.addTransceiver('audio', { direction: 'recvonly' });
+                this.peer_connection.addPeer()
                 this.roomStatus.value = "Подключаем участника...";
                 break;
             }

@@ -104,7 +104,7 @@ impl QualityMonitor {
         if self.last_bytes_received == 0 || self.last_packets_received == 0 {
             return None;
         }
-        if self.packet_loss > 10.0 || self.bitrate_bps < 200_000 {
+        if self.packet_loss > 10.0 || self.bitrate_bps < 250_000 {
             return Some(StreamQuality::Low);
         }
     

@@ -1,7 +1,7 @@
 use std::{collections::{HashMap, HashSet}, str::FromStr};
 use uuid::Uuid;
 
-use crate::{PacketStream, actor::{Actor, Addr, Ctx}, error::Error, user::{ConnectionRequest, ConnectionRequestKind, User, UserMessage}};
+use crate::{PacketSubscription, actor::{Actor, Addr, Ctx}, error::Error, user::{ConnectionRequest, ConnectionRequestKind, User, UserMessage}};
 
 #[derive(Default)]
 pub struct Room {
@@ -14,8 +14,17 @@ pub struct Peer {
     pub audio_stream: Option<PeerStream>
 }
 
+impl Peer {
+    fn add_audio_track(&mut self, stream: PeerStream) {
+        self.audio_stream = Some(stream);
+    }
+    fn add_stream_track(&mut self, quality: StreamQuality, stream: PeerStream) {
+        self.video_streams.insert(quality, stream);
+    }
+}
+
 pub struct PeerStream {
-    pub stream: PacketStream,
+    pub packet_subscription: PacketSubscription,
     pub mime_type: String,
     pub subscribers: HashSet<Uuid>,
 }
@@ -42,14 +51,16 @@ impl FromStr for StreamQuality {
 
 
 pub enum RoomMessage {
-    JoinAudio {
+    Join {
         peer_id: Uuid,
         addr: Addr<User>,
+    },
+    AddAudioTrack {
+        peer_id: Uuid,
         stream: PeerStream
     },
-    JoinVideo {
+    AddVideoTrack {
         peer_id: Uuid,
-        addr: Addr<User>,
         stream: PeerStream,
         quality: StreamQuality
     },
@@ -64,15 +75,20 @@ impl Actor for Room {
     type Message = RoomMessage;
     async fn handle(&mut self, _ctx: &mut Ctx<'_, Self>, msg: Self::Message) {
         match msg {
-            RoomMessage::JoinAudio { peer_id, addr, mut stream } => {
-                self.connect_old_peers_to_new_stream(peer_id, ConnectionRequestKind::Audio, &mut stream).await;
-                self.connect_new_peer_to_streams(peer_id, &addr).await;
-                self.add_peer_audio_track(peer_id, addr, stream).await;
+            RoomMessage::Join { peer_id, addr } => {
+                self.add_peer(peer_id, addr);
+            }
+            RoomMessage::AddAudioTrack { peer_id, mut stream } => {
+                self.connect_new_stream(peer_id, ConnectionRequestKind::Audio, &mut stream).await;
+                self.connect_old_streams(peer_id).await;
+                let peer = self.peers.get_mut(&peer_id).unwrap();
+                peer.add_audio_track(stream);
             },
-            RoomMessage::JoinVideo { peer_id, addr, mut stream, quality } => {
-                self.connect_old_peers_to_new_stream(peer_id, ConnectionRequestKind::Video { stream_quality: quality }, &mut stream).await;
-                self.connect_new_peer_to_streams(peer_id, &addr).await;
-                self.add_peer_video_track(peer_id, addr, stream, quality).await;
+            RoomMessage::AddVideoTrack { peer_id, mut stream, quality } => {
+                self.connect_new_stream(peer_id, ConnectionRequestKind::Video { stream_quality: quality }, &mut stream).await;
+                self.connect_old_streams(peer_id).await;
+                let peer = self.peers.get_mut(&peer_id).unwrap();
+                peer.add_stream_track(quality, stream);
             }
             RoomMessage::Leave { peer_id } => {
                 tracing::info!("❌ [RoomActor] Участник {} вышел из комнаты", peer_id);
@@ -95,79 +111,51 @@ impl Actor for Room {
 }
 
 impl Room {
-    async fn connect_old_peers_to_new_stream(&self, peer_id: Uuid, kind: ConnectionRequestKind, stream: &mut PeerStream) {
-        for (existed_peer_id, Peer { user, .. }) in self.peers.iter().filter(|(id, _)| **id != peer_id) {
-            tracing::info!("👤 [RoomActor] Отправляется ConnectToUser({:?}) {existed_peer_id} to {peer_id}", kind);
+    async fn connect_new_stream(&mut self, peer_id: Uuid, kind: ConnectionRequestKind, stream: &mut PeerStream) {
+        let peers = self.peers.iter_mut()
+            .filter(|(id, _)| **id != peer_id);
+        for (existed_peer_id, peer) in peers {
+            let Peer { user, .. } = peer;
             stream.subscribers.insert(*existed_peer_id);
             let _ = user.send(UserMessage::ConnectToUser(ConnectionRequest {
                 codec_mime_type: stream.mime_type.clone(),
                 kind,
                 speaker_id: peer_id,
-                stream: stream.stream.resubscribe()
+                stream: stream.packet_subscription.clone()
             })).await;
         }
     }
-    async fn connect_new_peer_to_streams(&mut self, peer_id: Uuid, addr: &Addr<User>) {
+    async fn connect_old_streams(&mut self, peer_id: Uuid) {
+        let Some(Peer { user, .. }) = self.peers.get(&peer_id) else { return ; };
+        let user = user.clone();
         let stream = self.peers.iter_mut()
             .filter(|(id, _)| **id != peer_id);
         for (existed_peer_id, Peer { audio_stream, video_streams, .. }) in stream {
             if let Some(audio_stream) = audio_stream {
                 if !audio_stream.subscribers.contains(&peer_id) {
-                    tracing::info!("👤 [RoomActor] Отправляется ConnectToUser(audio) {peer_id} to {existed_peer_id}");
-                    let _ = addr.send(UserMessage::ConnectToUser(ConnectionRequest {
+                    let _ = user.send(UserMessage::ConnectToUser(ConnectionRequest {
                         codec_mime_type: audio_stream.mime_type.clone(),
                         kind: ConnectionRequestKind::Audio,
                         speaker_id: *existed_peer_id,
-                        stream: audio_stream.stream.resubscribe()
+                        stream: audio_stream.packet_subscription.clone()
                     })).await;
                     audio_stream.subscribers.insert(peer_id);
                 }
             }
             for (quaity, video_stream) in video_streams {
                 if !video_stream.subscribers.contains(&peer_id) {
-                    tracing::info!("👤 [RoomActor] Отправляется ConnectToUser(video) {peer_id} to {existed_peer_id}");
-                    let _ = addr.send(UserMessage::ConnectToUser(ConnectionRequest {
+                    let _ = user.send(UserMessage::ConnectToUser(ConnectionRequest {
                         codec_mime_type: video_stream.mime_type.clone(),
                         kind: ConnectionRequestKind::Video { stream_quality: *quaity },
                         speaker_id: *existed_peer_id,
-                        stream: video_stream.stream.resubscribe()
+                        stream: video_stream.packet_subscription.clone()
                     })).await;
                     video_stream.subscribers.insert(peer_id);
                 }
             }
         }
     }
-    async fn add_peer_audio_track(&mut self, peer_id: Uuid, addr: Addr<User>, stream: PeerStream) {
-        match self.peers.entry(peer_id) {
-            std::collections::hash_map::Entry::Occupied(mut peer) => {
-                let peer = peer.get_mut();
-                peer.audio_stream = Some(stream);
-                tracing::info!("👤 [RoomActor] Участник {} поключил audio", peer_id);
-            }
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                let audio_stream = Some(stream);
-                let video_streams = HashMap::with_capacity(3);
-                let peer = Peer {audio_stream, user: addr, video_streams};
-                entry.insert(peer);
-                tracing::info!("👤 [RoomActor] Участник {} зашел в комнату", peer_id);
-            }
-        }
-    }
-    async fn add_peer_video_track(&mut self, peer_id: Uuid, addr: Addr<User>, stream: PeerStream, quality: StreamQuality) {
-        match self.peers.entry(peer_id) {
-            std::collections::hash_map::Entry::Occupied(mut peer) => {
-                let peer = peer.get_mut();
-                peer.video_streams.insert(quality, stream);
-                tracing::info!("👤 [RoomActor] Участник {} поключил audio", peer_id);
-            }
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                let audio_stream = None;
-                let mut video_streams = HashMap::with_capacity(3);
-                video_streams.insert(quality, stream);
-                let peer = Peer {audio_stream, user: addr, video_streams};
-                entry.insert(peer);
-                tracing::info!("👤 [RoomActor] Участник {} зашел в комнату", peer_id);
-            }
-        }
+    fn add_peer(&mut self, peer_id: Uuid, user: Addr<User>) {
+        self.peers.insert(peer_id, Peer { user, video_streams: HashMap::with_capacity(3), audio_stream: None });
     }
 }

@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use axum::response::Response;
 use futures_util::{SinkExt, StreamExt};
@@ -16,8 +17,10 @@ use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
 use webrtc::rtp::packet::Packet;
 use webrtc::rtp_transceiver::rtp_codec::{RTCRtpHeaderExtensionCapability, RTPCodecType};
+use webrtc::track::track_remote::TrackRemote;
 
 use crate::actor::{Actor, Addr};
+use crate::error::Error;
 use crate::room::{PeerStream, Room, RoomMessage, StreamQuality};
 use crate::user::{User};
 pub mod actor;
@@ -141,10 +144,10 @@ async fn try_connect_websocket(
         actor::StreamItem::Next(user::UserMessage::Websocket {
             message: msg.map_err(|e| error::Error::Axum(e))
         }));
+    let _ = room.send(RoomMessage::Join { peer_id, addr: user }).await;
     let signaler = peer_connection.clone();
     peer_connection.on_track(Box::new(move |track, _, _| {
         let room = room.clone();
-        let addr = user.clone();
         let signaler = signaler.clone();
         let sscr = track.ssrc();
         let mime_type = track.codec().capability.mime_type;
@@ -163,27 +166,28 @@ async fn try_connect_websocket(
         });
         Box::pin(async move {
             tracing::info!("[SFU] {kind} от {peer_id} подключен");
-            let (tx, stream) = tokio::sync::broadcast::channel(32);
+            let (tx, stream) = tokio::sync::broadcast::channel(128);
+            let active_receiver_counter =  Arc::new(AtomicUsize::new(0));
+            let stream = Arc::new(stream);
+            let packet_subscription = PacketSubscription {  active_receiver_counter: active_receiver_counter.clone(), stream};
             let mesage = match kind {
-                RTPCodecType::Audio | RTPCodecType::Unspecified => RoomMessage::JoinAudio { 
+                RTPCodecType::Audio | RTPCodecType::Unspecified => RoomMessage::AddAudioTrack { 
                     stream: PeerStream {
                         mime_type,
-                        stream,
+                        packet_subscription,
                         subscribers: HashSet::new()
                     }, 
-                    addr, 
                     peer_id 
                 },
                 RTPCodecType::Video => {
                     let stream_quality = rid;
                     match stream_quality {
-                        Ok(quality) => RoomMessage::JoinVideo { 
+                        Ok(quality) => RoomMessage::AddVideoTrack { 
                             stream: PeerStream {
                                 mime_type,
-                                stream,
+                                packet_subscription,
                                 subscribers: HashSet::new()
                             }, 
-                            addr, 
                             peer_id,
                             quality
                         },
@@ -197,26 +201,42 @@ async fn try_connect_websocket(
             let _ = room.send(mesage).await;
             tokio::spawn(async move {
                 loop {
-                    let r = track.read_rtp().await;
-                    let packet = match r {
-                        Ok((r, _)) => r,
-                        Err(e) => {
-                            tracing::error!("[SFU] failed read_rtp {e}");
-                            break
-                        }
+                    let active_receiver_count = active_receiver_counter.load(Ordering::Relaxed);
+                    if active_receiver_count == 0 { 
+                        tokio::time::sleep(Duration::from_millis(100)).await; 
+                        continue; 
                     };
-                    if tx.receiver_count() == 1 { continue; }
-                        if let Err(_) = tx.send(packet) {
-                            tracing::error!("[SFU] failed send packet");
-                            break;
-                        }
+                    if let Err(e) = forward_rtp_packets(&track, &tx).await {
+                        tracing::error!("[SFU] forward_rtp_packets {e}");
                     }
+                }
             });
         })
     }));
-    
-    
     Ok(())
 }
 
-pub type PacketStream = tokio::sync::broadcast::Receiver<Packet>;
+async fn forward_rtp_packets(track: &TrackRemote, channel: &PacketSender) -> Result<(), Error> {
+    let (packet, _) = track.read_rtp().await?;
+    channel.send(packet).map_err(|_| Error::SystemError { message: "failed send packet".into() })?;
+    Ok(())
+}
+
+pub type PacketStream = Arc<tokio::sync::broadcast::Receiver<Packet>>;
+pub type PacketSender = tokio::sync::broadcast::Sender<Packet>;
+
+pub type ActiveReceiverCounter = Arc<AtomicUsize>;
+
+pub struct PacketSubscription {
+    pub stream: PacketStream,
+    pub active_receiver_counter: ActiveReceiverCounter
+}
+
+impl Clone for PacketSubscription {
+    fn clone(&self) -> Self {
+        Self {
+            active_receiver_counter: self.active_receiver_counter.clone(),
+            stream: self.stream.clone()
+        }
+    }
+}
