@@ -4,7 +4,7 @@ use tokio::task::AbortHandle;
 use uuid::Uuid;
 use webrtc::{peer_connection::RTCPeerConnection, rtp_transceiver::{RTCRtpTransceiverInit, rtp_codec::RTCRtpCodecCapability, rtp_sender::RTCRtpSender, rtp_transceiver_direction::RTCRtpTransceiverDirection}, track::track_local::track_local_static_rtp::TrackLocalStaticRTP};
 
-use crate::{PacketSubscription, actor::{Actor, Addr}, error::Error, packet_subscription::PacketForwarder, quality_monitor::{QualityMonitor, QualityMonitorMessage}, room::StreamQuality, user::handle_rtp_packets};
+use crate::{PacketSubscription, actor::{Actor, Addr}, error::Error, packet_subscription::PacketForwarder, quality_monitor::{QualityMonitor, QualityMonitorMessage}, room::StreamQuality};
 
 pub struct VideoSubscription {
     pub pc: Arc<RTCPeerConnection>,
