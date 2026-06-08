@@ -1,5 +1,5 @@
 use futures_util::StreamExt;
-use tokio::sync::mpsc::error::SendError;
+use tokio::{sync::mpsc::error::SendError, task::AbortHandle};
 
 pub trait Actor: Sized + Send + 'static {
     type Message: Sized + Send + 'static;
@@ -65,7 +65,7 @@ impl<A: Actor> Addr<A> {
         self.requests.send(m).await?;
         Ok(())
     }
-    pub fn add_stream<S, F>(&self, mut stream: S, mapper: F)
+    pub fn add_stream<S, F>(&self, mut stream: S, mapper: F) -> AbortHandle
     where
         S: futures_util::Stream + Send + Unpin + 'static,
         F: Fn(S::Item) -> StreamItem<A::Message> + Send + Sync + 'static,
@@ -80,7 +80,8 @@ impl<A: Actor> Addr<A> {
                     break; // Актор умер, выходим из цикла
                 }
             }
-        });
+        })
+        .abort_handle()
     }
 }
 

@@ -1,11 +1,13 @@
 export class PeerConnection {
     constructor(users, roomStatus, ws) {
-        const pc = new RTCPeerConnection({ 
+        let config = { 
             iceServers: [
                 { urls: ["stun:stun.l.google.com:19302"] },
             ] 
-        });
-        pc.ontrack = ({ streams, track }) => {
+        }
+        const subscriber_pc = new RTCPeerConnection(config);
+        const publisher_pc = new RTCPeerConnection(config);
+        subscriber_pc.ontrack = ({ streams, track }) => {
             if (streams.length == 0) return;
             const remoteStream = streams[0];
             const rawId = remoteStream.id;
@@ -20,30 +22,84 @@ export class PeerConnection {
             });
             roomStatus.value = `Участников: ${users.value.length}`;
         };
-        this.makingOffer = false;
-        this.pc = pc;
+        publisher_pc.onicecandidate = (event) => {
+            if (event.candidate && event.candidate.candidate) {
+                this.ws.send(JSON.stringify({
+                    target: "publisher",
+                    type: "candidate",
+                    candidate: event.candidate.candidate,
+                }));
+            }
+        };
+
+        subscriber_pc.onicecandidate = (event) => {
+            if (event.candidate && event.candidate.candidate) {
+                this.ws.send(JSON.stringify({
+                    target: "subscriber",
+                    type: "candidate",
+                    candidate: event.candidate.candidate,
+                }));
+            }
+        };
+        this.subscriber_pc = subscriber_pc;
+        this.publisher_pc = publisher_pc;
         this.ws = ws;
     }
-    async create_offer() {
-        if (this.makingOffer) return;
+    async create_answer(sdp) {
         try {
-            console.log(this.pc.getReceivers());
-            this.makingOffer = true;
-            const offer = await this.pc.createOffer();
-            await this.pc.setLocalDescription(offer);
-            this.ws.send(JSON.stringify(offer));
-        } catch (err) {
-            console.log(err);
-            this.makingOffer = false;
-        }
-        finally {
-            this.makingOffer = false;
+            await this.subscriber_pc.setRemoteDescription(new RTCSessionDescription({
+                type: 'offer',
+                sdp: sdp
+            }));
+            const answer = await this.subscriber_pc.createAnswer();
+            await this.subscriber_pc.setLocalDescription(answer);
+            this.ws.send(JSON.stringify({
+                target: 'subscriber',
+                type: 'answer',
+                sdp: answer.sdp
+            }));
+        } catch (error) {
+            console.error("Ошибка при обработке SFU Offer:", error);
         }
     }
-    async addPeer() {
-        this.pc.addTransceiver('video', { direction: 'recvonly' });
-        this.pc.addTransceiver('audio', { direction: 'recvonly' });
-        await Promise.resolve();
-        await this.create_offer();
+    async add_stream(stream) {
+        const videoTrack = stream.getVideoTracks()[0];
+        this.publisher_pc.addTransceiver(videoTrack, {
+            direction: 'sendonly',
+            sendEncodings: [
+                    {
+                    rid: 'low',
+                    maxBitrate: 150000,          // Подняли с 70k для четких 180p
+                    scaleResolutionDownBy: 4.0,  // 320x180
+                    maxFramerate: 15,
+                },
+                {
+                    rid: 'mid',
+                    maxBitrate: 500000,          // Подняли с 250k для стабильных 360p
+                    scaleResolutionDownBy: 2.0,  // 640x360
+                    maxFramerate: 30,
+                },
+                {
+                    rid: 'high',
+                    maxBitrate: 1800000,         // Подняли с 1M. Для хорошего 720p30 нужно ~1.5-2.0 Mbps
+                    scaleResolutionDownBy: 1.0,  // 1280x720
+                    maxFramerate: 60,
+                }
+            ]
+        });
+        const audioTrack = stream.getAudioTracks()[0];
+        this.publisher_pc.addTransceiver(audioTrack, { direction: 'sendonly' });
+        let offer = await this.publisher_pc.createOffer();
+        await this.publisher_pc.setLocalDescription(offer);
+        this.ws.send(JSON.stringify({
+            target: "publisher",
+            type: "offer",
+            sdp: offer.sdp
+        }));
+    }
+    async receive_answer(message) {
+        if (this.publisher_pc.signalingState === "have-local-offer") {
+            await this.publisher_pc.setRemoteDescription(new RTCSessionDescription(message));
+        }
     }
 }

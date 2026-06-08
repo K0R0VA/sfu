@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use axum::response::Response;
 use futures_util::{SinkExt, StreamExt};
 use tower_http::services::ServeDir;
@@ -13,6 +13,7 @@ use webrtc::interceptor::registry::Registry;
 use webrtc::api::media_engine::{MediaEngine};
 use webrtc::api::APIBuilder;
 use webrtc::ice_transport::ice_server::RTCIceServer;
+use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
 use webrtc::rtp::packet::Packet;
@@ -29,6 +30,8 @@ pub mod room;
 pub mod user;
 pub mod video_subscription;
 pub mod quality_monitor;
+pub mod packet_subscription;
+pub mod audio_subscription;
 
 use axum::{
     routing::get,
@@ -83,7 +86,6 @@ async fn try_connect_websocket(
         "type": "welcome",
         "assigned_peer_id": peer_id
     });
-    ws_tx.send(serde_json::to_string(&welcome_payload)?.into()).await?;
 
     // 1. Инициализация MediaEngine (кодеки)
     let mut m = MediaEngine::default();
@@ -133,50 +135,55 @@ async fn try_connect_websocket(
         ..Default::default()
     };
     // 3. Создаем PeerConnection
-    let peer_connection = Arc::new(api.new_peer_connection(config).await?);
-    let user = User {
-        peer_connection: peer_connection.clone(),
-        peer_id: peer_id,
-        room: room.clone(),
-        ws_tx,
-        subscriptions: HashMap::new()
-    }.start();
-    user.add_stream(ws_rx, |msg|
-        actor::StreamItem::Next(user::UserMessage::Websocket {
-            message: msg.map_err(|e| error::Error::Axum(e))
-        }));
-    let _ = room.send(RoomMessage::Join { peer_id, addr: user }).await;
-    let signaler = peer_connection.clone();
-    peer_connection.on_track(Box::new(move |track, _, _| {
-        let room = room.clone();
+    let publisher_connection = Arc::new(api.new_peer_connection(config.clone()).await?);
+    // publisher_connection.on_ice_candidate(Box::new(move |candidate| {
+    //     let ws_tx = ws_tx_pub.clone();
+    //     Box::pin(async move {
+    //         if let Some(cand) = candidate {
+    //             if let Ok(cand_json) = cand.to_json() {
+    //                 let msg = serde_json::json!({
+    //                     "target": "publisher",
+    //                     "type": "candidate",
+    //                     "candidate": cand_json.candidate
+    //                 });
+    //                 let _ = ws_tx.send(Message::Text(msg.to_string().into())).await;
+    //             }
+    //         }
+    //     })
+    // }));
+    let subscriber_connection = Arc::new(api.new_peer_connection(config).await?);
+    let signaler = publisher_connection.clone();
+    let room_addr = room.clone();
+    publisher_connection.on_track(Box::new(move |track, _, _| {
+        let room = room_addr.clone();
         let signaler = signaler.clone();
         let sscr = track.ssrc();
         let mime_type = track.codec().capability.mime_type;
         let kind = track.kind();
         let rid = StreamQuality::from_str(track.rid());
-        tokio::spawn(async move {
-            loop {
-                if let Err(e) = signaler.write_rtcp(&[Box::new(PictureLossIndication {
-                    media_ssrc: sscr,
-                    sender_ssrc: 0
-                })]).await {
-                    tracing::error!("[SFU] send PictureLossIndication failed {e}");
-                }
-                tokio::time::sleep(Duration::from_secs(3)).await;
-            }
-        });
+        
         Box::pin(async move {
             tracing::info!("[SFU] {kind} от {peer_id} подключен");
             let (tx, stream) = tokio::sync::broadcast::channel(32);
+            let (pli_channel, pli_stream) = match kind {
+                RTPCodecType::Video => {
+                    let (tx, rx) = tokio::sync::mpsc::channel(32);
+                    (Some(tx), Some(rx))
+                },
+                _ => (None, None)
+            };
             let active_receiver_counter =  Arc::new(AtomicUsize::new(0));
             let stream = Arc::new(stream);
-            let packet_subscription = PacketSubscription {  active_receiver_counter: active_receiver_counter.clone(), stream};
+            let packet_subscription = PacketSubscription { 
+                active_receiver_counter: active_receiver_counter.clone(), 
+                stream, 
+                pli_channel
+            };
             let mesage = match kind {
                 RTPCodecType::Audio | RTPCodecType::Unspecified => RoomMessage::AddAudioTrack { 
                     stream: PeerStream {
                         mime_type,
                         packet_subscription,
-                        subscribers: HashSet::new()
                     }, 
                     peer_id 
                 },
@@ -186,7 +193,6 @@ async fn try_connect_websocket(
                         stream: PeerStream {
                             mime_type,
                             packet_subscription,
-                            subscribers: HashSet::new()
                         }, 
                         peer_id,
                         quality
@@ -194,6 +200,13 @@ async fn try_connect_websocket(
                 }   
             };
             let _ = room.send(mesage).await;
+            if let Some(pli_stream) = pli_stream {
+                tokio::spawn(async move {
+                    if let Err(e) = sending_pli(pli_stream, &signaler, sscr).await {
+                        tracing::error!("[SFU] forward_rtp_packets failed {e}");
+                    }
+                });
+            }
             tokio::spawn(async move {
                 if let Err(e) = forward_rtp_packets(&track, &tx, &active_receiver_counter).await {
                     tracing::error!("[SFU] forward_rtp_packets failed {e}");
@@ -201,6 +214,21 @@ async fn try_connect_websocket(
             });
         })
     }));
+    ws_tx.send(serde_json::to_string(&welcome_payload)?.into()).await?;
+    let user = User {
+        publisher_pc: publisher_connection.clone(),
+        subscriber_pc: subscriber_connection,
+        peer_id: peer_id,
+        room: room.clone(),
+        ws_tx,
+        audio_subscriptions: HashMap::new(),
+        video_subscriptions: HashMap::new()
+    }.start();
+    user.add_stream(ws_rx, |msg|
+        actor::StreamItem::Next(user::UserMessage::Websocket {
+            message: msg.map_err(|e| error::Error::Axum(e))
+        }));
+    let _ = room.send(RoomMessage::Join { peer_id, addr: user }).await;
     Ok(())
 }
 
@@ -217,11 +245,15 @@ async fn forward_rtp_packets(track: &TrackRemote, channel: &PacketSender, active
 
 pub type PacketStream = Arc<tokio::sync::broadcast::Receiver<Packet>>;
 pub type PacketSender = tokio::sync::broadcast::Sender<Packet>;
+pub type PliSender = Option<tokio::sync::mpsc::Sender<()>>;
+pub type PliStream = tokio::sync::mpsc::Receiver<()>;
+
 
 pub type ActiveReceiverCounter = Arc<AtomicUsize>;
 
 pub struct PacketSubscription {
     pub stream: PacketStream,
+    pub pli_channel: PliSender,
     pub active_receiver_counter: ActiveReceiverCounter
 }
 
@@ -229,7 +261,27 @@ impl Clone for PacketSubscription {
     fn clone(&self) -> Self {
         Self {
             active_receiver_counter: self.active_receiver_counter.clone(),
-            stream: self.stream.clone()
+            stream: self.stream.clone(),
+            pli_channel: self.pli_channel.clone()
         }
+    }
+}
+
+async fn sending_pli(mut pli_stream: PliStream, pc: &RTCPeerConnection, ssrc: u32) -> Result<(), Error> {
+    let mut instant = Instant::now()  - Duration::from_secs(2);
+    loop {
+        let Some(_) = pli_stream.recv().await else { break Ok(()); };
+        tracing::info!("[SFU] sending_pli");
+        let elapsed = instant.elapsed();
+        if elapsed < Duration::from_millis(1500) { 
+            let sleep_time = Duration::from_millis(1500) - elapsed;
+            tokio::time::sleep(sleep_time).await;
+            continue; 
+        }
+        pc.write_rtcp(&[Box::new(PictureLossIndication {
+            media_ssrc: ssrc,
+            sender_ssrc: 0
+        })]).await?;
+        instant = Instant::now();
     }
 }

@@ -26,14 +26,14 @@ impl Peer {
 pub struct PeerStream {
     pub packet_subscription: PacketSubscription,
     pub mime_type: String,
-    pub subscribers: HashSet<Uuid>,
 }
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, Ord, PartialOrd)]
+#[repr(u8)]
 pub enum StreamQuality {
-    Low,
-    Mid,
-    High,
+    Low = 0,
+    Mid = 1,
+    High = 2,
 }
 
 impl FromStr for StreamQuality {
@@ -77,16 +77,15 @@ impl Actor for Room {
         match msg {
             RoomMessage::Join { peer_id, addr } => {
                 self.add_peer(peer_id, addr);
+                self.connect_old_streams(peer_id).await;
             }
             RoomMessage::AddAudioTrack { peer_id, mut stream } => {
-                self.connect_new_stream(peer_id, ConnectionRequestKind::Audio, &mut stream).await;
-                self.connect_old_streams(peer_id).await;
+                self.connect_new_audio_stream(peer_id, &mut stream).await;
                 let peer = self.peers.get_mut(&peer_id).unwrap();
                 peer.add_audio_track(stream);
             },
             RoomMessage::AddVideoTrack { peer_id, mut stream, quality } => {
-                self.connect_new_stream(peer_id, ConnectionRequestKind::Video { stream_quality: quality }, &mut stream).await;
-                self.connect_old_streams(peer_id).await;
+                self.connect_new_video_stream(peer_id, quality, &mut stream).await;
                 let peer = self.peers.get_mut(&peer_id).unwrap();
                 peer.add_stream_track(quality, stream);
             }
@@ -111,18 +110,31 @@ impl Actor for Room {
 }
 
 impl Room {
-    async fn connect_new_stream(&mut self, peer_id: Uuid, kind: ConnectionRequestKind, stream: &mut PeerStream) {
+    async fn connect_new_audio_stream(&mut self, peer_id: Uuid, stream: &mut PeerStream) {
         let peers = self.peers.iter_mut()
             .filter(|(id, _)| **id != peer_id);
-        for (existed_peer_id, peer) in peers {
+        for (_, peer) in peers {
             let Peer { user, .. } = peer;
-            stream.subscribers.insert(*existed_peer_id);
-            let _ = user.send(UserMessage::ConnectToUser(ConnectionRequest {
-                codec_mime_type: stream.mime_type.clone(),
-                kind,
-                speaker_id: peer_id,
-                stream: stream.packet_subscription.clone()
+            let _ = user.send(UserMessage::ConnectAudio(ConnectionRequest { 
+                speaker_id: peer_id, 
+                stream: stream.packet_subscription.clone(), 
+                codec_mime_type: stream.mime_type.clone()
             })).await;
+        }
+    }
+    async fn connect_new_video_stream(&mut self, peer_id: Uuid, quality: StreamQuality, stream: &mut PeerStream) {
+        let peers = self.peers.iter_mut()
+            .filter(|(id, _)| **id != peer_id);
+        for (_, peer) in peers {
+            let Peer { user, .. } = peer;
+            let _ = user.send(UserMessage::ConnectVideo{ 
+                quality, 
+                request: ConnectionRequest { 
+                    speaker_id: peer_id, 
+                    stream: stream.packet_subscription.clone(), 
+                    codec_mime_type: stream.mime_type.clone()
+                }
+            }).await;
         }
     }
     async fn connect_old_streams(&mut self, peer_id: Uuid) {
@@ -132,26 +144,21 @@ impl Room {
             .filter(|(id, _)| **id != peer_id);
         for (existed_peer_id, Peer { audio_stream, video_streams, .. }) in stream {
             if let Some(audio_stream) = audio_stream {
-                if !audio_stream.subscribers.contains(&peer_id) {
-                    let _ = user.send(UserMessage::ConnectToUser(ConnectionRequest {
-                        codec_mime_type: audio_stream.mime_type.clone(),
-                        kind: ConnectionRequestKind::Audio,
-                        speaker_id: *existed_peer_id,
-                        stream: audio_stream.packet_subscription.clone()
-                    })).await;
-                    audio_stream.subscribers.insert(peer_id);
-                }
+                let _ = user.send(UserMessage::ConnectAudio(ConnectionRequest {
+                    codec_mime_type: audio_stream.mime_type.clone(),
+                    speaker_id: *existed_peer_id,
+                    stream: audio_stream.packet_subscription.clone()
+                })).await;
             }
             for (quaity, video_stream) in video_streams {
-                if !video_stream.subscribers.contains(&peer_id) {
-                    let _ = user.send(UserMessage::ConnectToUser(ConnectionRequest {
+                let _ = user.send(UserMessage::ConnectVideo {
+                    quality: *quaity,
+                    request: ConnectionRequest {
                         codec_mime_type: video_stream.mime_type.clone(),
-                        kind: ConnectionRequestKind::Video { stream_quality: *quaity },
                         speaker_id: *existed_peer_id,
                         stream: video_stream.packet_subscription.clone()
-                    })).await;
-                    video_stream.subscribers.insert(peer_id);
-                }
+                    }
+                }).await;
             }
         }
     }

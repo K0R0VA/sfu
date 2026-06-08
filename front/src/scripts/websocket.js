@@ -17,6 +17,21 @@ export class UserWebsocket {
         this.ws.onmessage = async (event) => {
             const message = JSON.parse(event.data);
             switch (message.type) {
+            case 'candidate': {
+                if (message.candidate) {
+                    const iceCandidate = new RTCIceCandidate({
+                        candidate: message.candidate,
+                        sdpMid: message.target === "publisher" ? "0" : "1", // или парсить из сообщения, если прокидываете sdpMid
+                    });
+
+                    if (message.target === 'publisher') {
+                        await this.peer_connection.publisher_pc.addIceCandidate(iceCandidate);
+                    } else if (message.target === 'subscriber') {
+                        await this.peer_connection.subscriber_pc.addIceCandidate(iceCandidate);
+                    }
+                }
+                break;
+            }
             case 'welcome': {
                 this.peer_id = message.assigned_peer_id;
                 this.roomStatus.value = "Получение медиапотока...";
@@ -34,34 +49,7 @@ export class UserWebsocket {
                         channelCount: { ideal: 1 }     // Моно (достаточно для голоса)
                     }
                 });
-                const videoTrack = stream.getVideoTracks()[0];
-                this.peer_connection.pc.addTransceiver(videoTrack, {
-                    direction: 'sendonly',
-                    sendEncodings: [
-                          {
-                            rid: 'low',
-                            maxBitrate: 150000,          // Подняли с 70k для четких 180p
-                            scaleResolutionDownBy: 4.0,  // 320x180
-                            maxFramerate: 15             // Ограничение FPS экономит трафик слабых клиентов
-                            
-                        },
-                        {
-                            rid: 'mid',
-                            maxBitrate: 500000,          // Подняли с 250k для стабильных 360p
-                            scaleResolutionDownBy: 2.0,  // 640x360
-                            maxFramerate: 30
-                        },
-                        {
-                            rid: 'high',
-                            maxBitrate: 1800000,         // Подняли с 1M. Для хорошего 720p30 нужно ~1.5-2.0 Mbps
-                            scaleResolutionDownBy: 1.0,  // 1280x720
-                            maxFramerate: 30
-                        }
-                    ]
-                });
-                const audioTrack = stream.getAudioTracks()[0];
-                this.peer_connection.pc.addTransceiver(audioTrack, { direction: 'sendonly' });
-                await this.peer_connection.create_offer();
+                await this.peer_connection.add_stream(stream);
                 this.users.value.set(this.peer_id, {
                     stream,
                     isLocal: true
@@ -71,9 +59,8 @@ export class UserWebsocket {
                 this.roomStatus.value = "Подключено";
                 break;
             }
-            case 'peer_join': {
-                this.peer_connection.addPeer()
-                this.roomStatus.value = "Подключаем участника...";
+            case 'offer': {
+                await this.peer_connection.create_answer(message.sdp);
                 break;
             }
             case 'peer_left': {
@@ -82,9 +69,7 @@ export class UserWebsocket {
                 break;
             }
             case 'answer': {
-                if (this.peer_connection.pc.signalingState === "have-local-offer") {
-                    await this.peer_connection.pc.setRemoteDescription(new RTCSessionDescription(message));
-                }
+                await this.peer_connection.receive_answer({type: message.type, sdp: message.sdp});
                 break;
             }
         }};
