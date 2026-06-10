@@ -1,7 +1,7 @@
-use std::{collections::{HashMap, HashSet}, str::FromStr};
+use std::{collections::{HashMap}, str::FromStr};
 use uuid::Uuid;
 
-use crate::{PacketSubscription, actor::{Actor, Addr, Ctx}, error::Error, user::{ConnectionRequest, ConnectionRequestKind, User, UserMessage}};
+use crate::{PacketAudioSubscription, PacketVideoSubscription, actor::{Actor, Addr, Ctx}, error::Error, pli_sender::Ping, user::{ConnectionRequest, User, UserMessage}};
 
 #[derive(Default)]
 pub struct Room {
@@ -10,21 +10,21 @@ pub struct Room {
 
 pub struct Peer {
     pub user: Addr<User>,
-    pub video_streams: HashMap<StreamQuality, PeerStream>,
-    pub audio_stream: Option<PeerStream>
+    pub video_streams: HashMap<StreamQuality, PeerStream<PacketVideoSubscription>>,
+    pub audio_stream: Option<PeerStream<PacketAudioSubscription>>
 }
 
 impl Peer {
-    fn add_audio_track(&mut self, stream: PeerStream) {
+    fn add_audio_track(&mut self, stream: PeerStream<PacketAudioSubscription>) {
         self.audio_stream = Some(stream);
     }
-    fn add_stream_track(&mut self, quality: StreamQuality, stream: PeerStream) {
+    fn add_stream_track(&mut self, quality: StreamQuality, stream: PeerStream<PacketVideoSubscription>) {
         self.video_streams.insert(quality, stream);
     }
 }
 
-pub struct PeerStream {
-    pub packet_subscription: PacketSubscription,
+pub struct PeerStream<T> {
+    pub packet_subscription: T,
     pub mime_type: String,
 }
 
@@ -51,17 +51,18 @@ impl FromStr for StreamQuality {
 
 
 pub enum RoomMessage {
+    SubscribeToPeers { peer_id: Uuid },
     Join {
         peer_id: Uuid,
         addr: Addr<User>,
     },
     AddAudioTrack {
         peer_id: Uuid,
-        stream: PeerStream
+        stream: PeerStream<PacketAudioSubscription>
     },
     AddVideoTrack {
         peer_id: Uuid,
-        stream: PeerStream,
+        stream: PeerStream<PacketVideoSubscription>,
         quality: StreamQuality
     },
     // Выход пользователя
@@ -77,6 +78,8 @@ impl Actor for Room {
         match msg {
             RoomMessage::Join { peer_id, addr } => {
                 self.add_peer(peer_id, addr);
+            }
+            RoomMessage::SubscribeToPeers { peer_id } => {
                 self.connect_old_streams(peer_id).await;
             }
             RoomMessage::AddAudioTrack { peer_id, mut stream } => {
@@ -110,8 +113,8 @@ impl Actor for Room {
 }
 
 impl Room {
-    async fn connect_new_audio_stream(&mut self, peer_id: Uuid, stream: &mut PeerStream) {
-        let peers = self.peers.iter_mut()
+    async fn connect_new_audio_stream(&mut self, peer_id: Uuid, stream: &mut PeerStream<PacketAudioSubscription>) {
+        let peers = self.peers.iter()
             .filter(|(id, _)| **id != peer_id);
         for (_, peer) in peers {
             let Peer { user, .. } = peer;
@@ -122,8 +125,8 @@ impl Room {
             })).await;
         }
     }
-    async fn connect_new_video_stream(&mut self, peer_id: Uuid, quality: StreamQuality, stream: &mut PeerStream) {
-        let peers = self.peers.iter_mut()
+    async fn connect_new_video_stream(&mut self, peer_id: Uuid, quality: StreamQuality, stream: &mut PeerStream<PacketVideoSubscription>) {
+        let peers = self.peers.iter()
             .filter(|(id, _)| **id != peer_id);
         for (_, peer) in peers {
             let Peer { user, .. } = peer;
@@ -139,8 +142,7 @@ impl Room {
     }
     async fn connect_old_streams(&mut self, peer_id: Uuid) {
         let Some(Peer { user, .. }) = self.peers.get(&peer_id) else { return ; };
-        let user = user.clone();
-        let stream = self.peers.iter_mut()
+        let stream = self.peers.iter()
             .filter(|(id, _)| **id != peer_id);
         for (existed_peer_id, Peer { audio_stream, video_streams, .. }) in stream {
             if let Some(audio_stream) = audio_stream {
@@ -151,6 +153,7 @@ impl Room {
                 })).await;
             }
             for (quaity, video_stream) in video_streams {
+                let _ = video_stream.packet_subscription.pli_sender.send(Ping).await;
                 let _ = user.send(UserMessage::ConnectVideo {
                     quality: *quaity,
                     request: ConnectionRequest {

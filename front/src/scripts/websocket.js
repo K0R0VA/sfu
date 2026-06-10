@@ -18,18 +18,7 @@ export class UserWebsocket {
             const message = JSON.parse(event.data);
             switch (message.type) {
             case 'candidate': {
-                if (message.candidate) {
-                    const iceCandidate = new RTCIceCandidate({
-                        candidate: message.candidate,
-                        sdpMid: message.target === "publisher" ? "0" : "1", // или парсить из сообщения, если прокидываете sdpMid
-                    });
-
-                    if (message.target === 'publisher') {
-                        await this.peer_connection.publisher_pc.addIceCandidate(iceCandidate);
-                    } else if (message.target === 'subscriber') {
-                        await this.peer_connection.subscriber_pc.addIceCandidate(iceCandidate);
-                    }
-                }
+                await this.peer_connection.add_ice_candidate(message);
                 break;
             }
             case 'welcome': {
@@ -80,12 +69,22 @@ export class UserWebsocket {
         };
     }
     disconnect() {
-        this.ws.close();
-        this.peer_connection.pc.close();
-        this.users.value.clear();
-        this.isJoined.value = false;
-        this.isJoined.value = false;
-        this.roomStatus.value = 'Готов к подключению';
+        try {
+            this.ws.close();
+            this.peer_connection.publisher_pc.close();
+            this.peer_connection.subscriber_pc.close();
+        }
+        catch (e) {
+            console.log(e);
+        }
+        finally {
+            this.users.value.clear();
+            this.isJoined.value = false;
+            this.isJoined.value = false;
+            this.roomStatus.value = 'Готов к подключению';
+        }
+        
+        
     }
 }
 

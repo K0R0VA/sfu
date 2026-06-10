@@ -8,12 +8,12 @@ export class PeerConnection {
         const subscriber_pc = new RTCPeerConnection(config);
         const publisher_pc = new RTCPeerConnection(config);
         subscriber_pc.ontrack = ({ streams, track }) => {
-            if (streams.length == 0) return;
+            console.log('new track', streams);
             const remoteStream = streams[0];
             const rawId = remoteStream.id;
             let user = users.value.get(rawId);
             if (!!user) {
-                remoteStream.getTracks(track => user.stream.addTrack(track));
+                user.stream.addTrack(track);
                 return;
             }
             users.value.set(rawId, {
@@ -41,12 +41,26 @@ export class PeerConnection {
                 }));
             }
         };
+        this.signaling_queue = Promise.resolve();
         this.subscriber_pc = subscriber_pc;
         this.publisher_pc = publisher_pc;
         this.ws = ws;
     }
+    async add_ice_candidate(message) {
+        const iceCandidate = new RTCIceCandidate({
+            candidate: message.candidate,
+            sdpMid: message.sdp_mid,
+            sdpMLineIndex: message.sdp_mline_index
+        });
+        await this[`${message.target}_pc`].addIceCandidate(iceCandidate);
+    }
     async create_answer(sdp) {
+        this.signaling_queue = this.signaling_queue.then(() => this.create_answer_task(sdp));
+        return this.signaling_queue;
+    }
+    async create_answer_task(sdp) {
         try {
+            console.log('new offer');
             await this.subscriber_pc.setRemoteDescription(new RTCSessionDescription({
                 type: 'offer',
                 sdp: sdp

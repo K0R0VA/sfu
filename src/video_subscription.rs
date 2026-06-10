@@ -1,32 +1,31 @@
-use std::{collections::HashMap, sync::{Arc, atomic::Ordering}};
+use std::{collections::HashMap, sync::{Arc, atomic::Ordering}, time::Duration};
 
 use tokio::task::AbortHandle;
 use uuid::Uuid;
-use webrtc::{peer_connection::RTCPeerConnection, rtp_transceiver::{RTCRtpTransceiverInit, rtp_codec::RTCRtpCodecCapability, rtp_sender::RTCRtpSender, rtp_transceiver_direction::RTCRtpTransceiverDirection}, track::track_local::track_local_static_rtp::TrackLocalStaticRTP};
+use webrtc::{peer_connection::RTCPeerConnection, rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication, rtp_transceiver::{RTCRtpTransceiverInit, rtp_codec::RTCRtpCodecCapability, rtp_sender::RTCRtpSender, rtp_transceiver_direction::RTCRtpTransceiverDirection}, track::track_local::{track_local_static_rtp::TrackLocalStaticRTP, track_local_static_sample::TrackLocalStaticSample}};
 
-use crate::{PacketSubscription, actor::{Actor, Addr}, error::Error, packet_subscription::PacketForwarder, quality_monitor::{QualityMonitor, QualityMonitorMessage}, room::StreamQuality};
+use crate::{PacketVideoSubscription, actor::{Actor, Addr}, error::Error, pli_sender::Ping, quality_monitor::{QualityMonitor, QualityMonitorMessage}, room::StreamQuality, video_packet_forwarder::{VideoPacketForwarder, VideoPacketForwarderMessage}, video_subscription::VideoSubscriptionMessage::ForcePli};
 
 pub struct VideoSubscription {
     pub pc: Arc<RTCPeerConnection>,
     pub peer_id: Uuid,
-    pub connections: HashMap<StreamQuality, PacketSubscription>,
+    pub connections: HashMap<StreamQuality, PacketVideoSubscription>,
     pub active_track: Arc<RTCRtpSender>,
-    pub track: Arc<TrackLocalStaticRTP>,
     pub task: Option<AbortHandle>,
-    pub quality_monitor: Option<Addr<QualityMonitor>>,
-    pub packet_forwarder: Option<Addr<PacketForwarder>>,
-    pub active_quality: StreamQuality
+    pub packet_forwarder: Addr<VideoPacketForwarder>,
+    pub active_quality: StreamQuality,
+    pub is_active: bool,
 }
 
 impl VideoSubscription {
-    pub async fn new(pc: Arc<RTCPeerConnection>, peer_id: Uuid, mime_type: String, stream: PacketSubscription, quality: StreamQuality) -> Result<Self, Error> {
+    pub async fn new(pc: Arc<RTCPeerConnection>, peer_id: Uuid, mime_type: String, stream: PacketVideoSubscription, quality: StreamQuality) -> Result<Self, Error> {
         let mut connections = HashMap::with_capacity(3);
         let track: Arc<TrackLocalStaticRTP> = Arc::new(TrackLocalStaticRTP::new(
             RTCRtpCodecCapability {
                 mime_type: mime_type.clone(),
                 ..Default::default()
             },
-            Uuid::new_v4().to_string(),
+            "video".to_string(),
             peer_id.to_string(),
         ));
         let active_track = pc.add_transceiver_from_track(
@@ -36,15 +35,17 @@ impl VideoSubscription {
             .await?
             .sender()
             .await;
+        let packet_forwarder = VideoPacketForwarder::new(track.clone()).start();
         connections.insert(quality, stream.clone());
-        let this = Self { pc, peer_id, connections, active_track, track, active_quality: quality, quality_monitor: None, packet_forwarder: None, task: None };
+        let this = Self { pc, peer_id, connections, active_track, active_quality: quality, packet_forwarder, task: None, is_active: false  };
         Ok(this) 
     }
 }
 
 pub enum VideoSubscriptionMessage {
-    AddSubsription { quality: StreamQuality, stream: PacketSubscription },
+    AddSubsription { quality: StreamQuality, stream: PacketVideoSubscription },
     SwitchQualityLayer { to: StreamQuality },
+    ForcePli,
     Drop
 }
 
@@ -57,46 +58,61 @@ impl Actor for VideoSubscription {
             VideoSubscriptionMessage::AddSubsription { quality, stream } => {
                 self.connections.insert(quality, stream);
             }
-            VideoSubscriptionMessage::SwitchQualityLayer { to  } => {
-                let Some(subscription) = self.connections.get(&to) else { return; };
-                let Some(packet_forwarder) = &self.packet_forwarder else { return ; };
-                let stream = tokio_stream::wrappers::BroadcastStream::new(subscription.stream.resubscribe());
-                if let Some(pli_channel) = &subscription.pli_channel {
-                    let _ = pli_channel.send(()).await;
-                }
-                let task = packet_forwarder.add_stream(stream, |r| match r {
-                    Ok(packet) => crate::actor::StreamItem::Next(packet),
-                    Err(_) => crate::actor::StreamItem::Close
-                });
+            VideoSubscriptionMessage::ForcePli => {
                 if let Some(connection) = self.connections.get(&self.active_quality) {
-                    connection.active_receiver_counter.fetch_sub(1, Ordering::Relaxed);
+                    let _ = connection.pli_sender.send(Ping).await;
                 }
-                if let Some(old_task) = self.task.take() {
-                    old_task.abort();
+            }
+            VideoSubscriptionMessage::SwitchQualityLayer { to  } => {
+                tracing::info!("[VideoSubscription] SwitchQualityLayer {:?}", to);
+                if let Some(subscription) = self.connections.get(&to) {
+                    if let Some(connection) = self.connections.get(&self.active_quality) {
+                        connection.active_receiver_counter.fetch_sub(1, Ordering::Relaxed);
+                    }
+                    subscription.active_receiver_counter.fetch_add(1, Ordering::Relaxed);
+                    let _ = self.packet_forwarder.send(VideoPacketForwarderMessage::LayerSwitched).await;
+                    let _ = subscription.pli_sender.send(Ping).await;
+                    let stream = tokio_stream::wrappers::BroadcastStream::new(subscription.stream.resubscribe());
+                    let task = self.packet_forwarder.add_stream(stream, |r| match r {
+                        Ok(packet) => crate::actor::StreamItem::Next(VideoPacketForwarderMessage::RtpPacket(packet)),
+                        Err(_) => crate::actor::StreamItem::Close
+                    });
+                    if let Some(old_task) = self.task.take() {
+                        old_task.abort();
+                    }
+                    self.task = Some(task);
                 }
-                self.task = Some(task);
             },
-            VideoSubscriptionMessage::Drop => self.stop(ctx).await
+            VideoSubscriptionMessage::Drop => self.stop(ctx).await,
         }
     }
 
     async fn starting(&mut self, ctx: &crate::actor::Ctx<'_, Self>) {
-        let pc = self.pc.clone();
-        self.quality_monitor = Some(QualityMonitor::new(pc, ctx.addr.clone(), self.active_quality).start());
-        if let Some(subscription) = self.connections.values().next() {
-            let packet_forwarder = PacketForwarder { owner: futures_util::future::Either::Right(ctx.addr.clone()), track: self.track.clone() }.start();
-            let stream = tokio_stream::wrappers::BroadcastStream::new(subscription.stream.resubscribe());
-            if let Some(pli_channel) = &subscription.pli_channel {
-                let _ = pli_channel.send(()).await;
+        let active_track = self.active_track.clone();
+        let addr = ctx.addr.clone();
+        tokio::spawn(async move {
+            let mut rtcp_buf = vec![0u8; 1500];
+            while let Ok((packets, _)) = active_track.read(&mut rtcp_buf).await {
+                for packet in packets {
+                    // Если подписчик кричит, что потерял картинку (PLI)
+                    if packet.as_any().downcast_ref::<PictureLossIndication>().is_some() {
+                        let _ = addr.send(ForcePli).await;
+                    }
+                }
             }
-            let task = packet_forwarder.add_stream(stream, |r| match r {
-                Ok(packet) => crate::actor::StreamItem::Next(packet),
-                Err(_) => crate::actor::StreamItem::Close
-            });
-            self.task = Some(task);
-            self.packet_forwarder = Some(packet_forwarder);
-            subscription.active_receiver_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
+        });
+        let subscription = self.connections.values().next().unwrap();
+        let _ = self.packet_forwarder.send(VideoPacketForwarderMessage::LayerSwitched).await;
+        subscription.active_receiver_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let stream = tokio_stream::wrappers::BroadcastStream::new(subscription.stream.resubscribe());
+        let task = self.packet_forwarder.add_stream(stream, |r| match r {
+            Ok(packet) => crate::actor::StreamItem::Next(VideoPacketForwarderMessage::RtpPacket(packet)),
+            Err(e) => {
+                tracing::error!("{e}");
+                crate::actor::StreamItem::Close
+            }
+        });
+        self.task = Some(task);
         tracing::info!("[VideoSubscription] starting");
     }
 
@@ -105,9 +121,6 @@ impl Actor for VideoSubscription {
             active_connection.active_receiver_counter.fetch_sub(1, Ordering::Relaxed);
         }
         self.connections.clear();
-        if let Some(quality_monitor) = self.quality_monitor.take() {
-            let _ = quality_monitor.send(QualityMonitorMessage::Close).await;
-        }
         if let Some(task) = self.task.take() {
             task.abort();
         };

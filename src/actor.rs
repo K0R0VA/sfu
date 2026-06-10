@@ -1,5 +1,7 @@
+use std::sync::Arc;
+
 use futures_util::StreamExt;
-use tokio::{sync::mpsc::error::SendError, task::AbortHandle};
+use tokio::{sync::{Mutex, mpsc::error::SendError}, task::AbortHandle};
 
 pub trait Actor: Sized + Send + 'static {
     type Message: Sized + Send + 'static;
@@ -36,12 +38,14 @@ async fn handle_messages<A: Actor>(actor: &mut A, ctx: &mut Ctx<'_, A>, mut mess
 
  pub struct Addr<A: Actor> {
     requests: tokio::sync::mpsc::Sender<<A as Actor>::Message>,
+    terminate_call: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>
 }
 
 impl<A: Actor> Clone for Addr<A> {
     fn clone(&self) -> Self {
         Addr {
-            requests: self.requests.clone()
+            requests: self.requests.clone(),
+            terminate_call: self.terminate_call.clone()
         }
     }
 }
@@ -49,17 +53,26 @@ impl<A: Actor> Clone for Addr<A> {
 impl<A: Actor> Addr<A> {
     fn spawn(mut actor: A, capacity: usize) -> Self {
         let (requests, messages) = tokio::sync::mpsc::channel(capacity);
-        let addr = Addr { requests };
+        let (terminate_call, terminate) = tokio::sync::oneshot::channel();
+        let addr = Addr { requests, terminate_call: Arc::new(Mutex::new(Some(terminate_call))) };
         tokio::spawn({
             let ctx_addr = addr.clone();
             async move {
                 let mut ctx = Ctx {addr: &ctx_addr, should_stop: false};
                 actor.starting(&ctx).await;
-                handle_messages(&mut actor, &mut ctx, messages).await;
+                tokio::select! {
+                    _ = handle_messages(&mut actor, &mut ctx, messages) => {},
+                    _ = terminate => {}
+                }
                 actor.stopping(&ctx).await;
             }
         });
         addr
+    }
+    pub async fn terminate(&self) {
+        if let Some(terminate_call) = self.terminate_call.lock().await.take() {
+            let _ = terminate_call.send(());
+        }
     }
     pub async fn send(&self, m: <A as Actor>::Message) -> Result<(), SendError<<A as Actor>::Message>> {
         self.requests.send(m).await?;

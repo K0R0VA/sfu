@@ -1,23 +1,21 @@
 use std::sync::Arc;
 
-use futures_util::future::Either;
 use webrtc::{rtp::packet::Packet, track::track_local::{TrackLocalWriter, track_local_static_rtp::TrackLocalStaticRTP}};
 
-use crate::{actor::{Actor, Addr}, audio_subscription::AudioSubscription, error::Error, video_subscription::VideoSubscription};
+use crate::{actor::{Actor}, error::Error};
 
-pub struct PacketForwarder {
+pub struct AudioPacketForwarder {
     pub track: Arc<TrackLocalStaticRTP>,
-    pub owner: Either<Addr<AudioSubscription>, Addr<VideoSubscription>>
 }
 
-impl PacketForwarder {
+impl AudioPacketForwarder {
     async fn forward(&self, r: Packet) -> Result<(), Error> {
         self.track.write_rtp(&r).await?;
         Ok(())
     }
 }
 
-impl Actor for PacketForwarder {
+impl Actor for AudioPacketForwarder {
     type Message = Packet;
     async fn starting(&mut self, _ctx: &crate::actor::Ctx<'_, Self>) {
         tracing::info!("[PacketForwarder] Starting");
