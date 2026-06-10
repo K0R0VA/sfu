@@ -11,10 +11,8 @@ pub struct VideoSubscription {
     pub peer_id: Uuid,
     pub connections: HashMap<StreamQuality, PacketVideoSubscription>,
     pub active_track: Arc<RTCRtpSender>,
-    pub task: Option<AbortHandle>,
     pub packet_forwarder: Addr<VideoPacketForwarder>,
     pub active_quality: StreamQuality,
-    pub is_active: bool,
 }
 
 impl VideoSubscription {
@@ -37,7 +35,7 @@ impl VideoSubscription {
             .await;
         let packet_forwarder = VideoPacketForwarder::new(track.clone()).start();
         connections.insert(quality, stream.clone());
-        let this = Self { pc, peer_id, connections, active_track, active_quality: quality, packet_forwarder, task: None, is_active: false  };
+        let this = Self { pc, peer_id, connections, active_track, active_quality: quality, packet_forwarder,   };
         Ok(this) 
     }
 }
@@ -65,22 +63,14 @@ impl Actor for VideoSubscription {
             }
             VideoSubscriptionMessage::SwitchQualityLayer { to  } => {
                 tracing::info!("[VideoSubscription] SwitchQualityLayer {:?}", to);
-                if let Some(subscription) = self.connections.get(&to) {
-                    if let Some(connection) = self.connections.get(&self.active_quality) {
-                        connection.active_receiver_counter.fetch_sub(1, Ordering::Relaxed);
-                    }
-                    subscription.active_receiver_counter.fetch_add(1, Ordering::Relaxed);
-                    let _ = self.packet_forwarder.send(VideoPacketForwarderMessage::LayerSwitched).await;
-                    let _ = subscription.pli_sender.send(Ping).await;
-                    let stream = tokio_stream::wrappers::BroadcastStream::new(subscription.stream.resubscribe());
-                    let task = self.packet_forwarder.add_stream(stream, |r| match r {
-                        Ok(packet) => crate::actor::StreamItem::Next(VideoPacketForwarderMessage::RtpPacket(packet)),
-                        Err(_) => crate::actor::StreamItem::Close
-                    });
-                    if let Some(old_task) = self.task.take() {
-                        old_task.abort();
-                    }
-                    self.task = Some(task);
+                if let Some(PacketVideoSubscription { stream, pli_sender, active_receiver_counter }) = self.connections.get(&to) {
+                    let _ = pli_sender.send(Ping).await;
+                    let stream = tokio_stream::wrappers::BroadcastStream::new(stream.resubscribe());
+                    let _ = self.packet_forwarder.send(VideoPacketForwarderMessage::LayerSwitched {
+                        stream,
+                        active_receivers: active_receiver_counter.clone(),
+                        quality: to
+                    }).await;
                 }
             },
             VideoSubscriptionMessage::Drop => self.stop(ctx).await,
@@ -101,18 +91,14 @@ impl Actor for VideoSubscription {
                 }
             }
         });
-        let subscription = self.connections.values().next().unwrap();
-        let _ = self.packet_forwarder.send(VideoPacketForwarderMessage::LayerSwitched).await;
-        subscription.active_receiver_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let stream = tokio_stream::wrappers::BroadcastStream::new(subscription.stream.resubscribe());
-        let task = self.packet_forwarder.add_stream(stream, |r| match r {
-            Ok(packet) => crate::actor::StreamItem::Next(VideoPacketForwarderMessage::RtpPacket(packet)),
-            Err(e) => {
-                tracing::error!("{e}");
-                crate::actor::StreamItem::Close
-            }
-        });
-        self.task = Some(task);
+        let (quality, PacketVideoSubscription {active_receiver_counter, stream, ..}) = self.connections.iter().next().unwrap();
+        let stream = tokio_stream::wrappers::BroadcastStream::new(stream.resubscribe());
+        let _ = self.packet_forwarder.send(VideoPacketForwarderMessage::LayerSwitched {
+            stream,
+            active_receivers: active_receiver_counter.clone(),
+            quality: *quality
+        }).await;
+        
         tracing::info!("[VideoSubscription] starting");
     }
 
@@ -121,9 +107,6 @@ impl Actor for VideoSubscription {
             active_connection.active_receiver_counter.fetch_sub(1, Ordering::Relaxed);
         }
         self.connections.clear();
-        if let Some(task) = self.task.take() {
-            task.abort();
-        };
         if let Err(e) = self.pc.remove_track(&self.active_track).await {
             tracing::error!("[VideoSubscription] remove_track {e}");
         }

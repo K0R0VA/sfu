@@ -84,20 +84,20 @@ export class PeerConnection {
                     {
                     rid: 'low',
                     maxBitrate: 150000,          // Подняли с 70k для четких 180p
-                    scaleResolutionDownBy: 4.0,  // 320x180
-                    maxFramerate: 15,
+                    scaleResolutionDownBy: 8.0,  
+                    maxFramerate: 60,
                 },
                 {
                     rid: 'mid',
                     maxBitrate: 500000,          // Подняли с 250k для стабильных 360p
-                    scaleResolutionDownBy: 2.0,  // 640x360
-                    maxFramerate: 30,
+                    scaleResolutionDownBy: 4.0,  //
+                    maxFramerate: 60,
                 },
                 {
                     rid: 'high',
                     maxBitrate: 1800000,         // Подняли с 1M. Для хорошего 720p30 нужно ~1.5-2.0 Mbps
                     scaleResolutionDownBy: 1.0,  // 1280x720
-                    maxFramerate: 60,
+                    maxFramerate: 120,
                 }
             ]
         });

@@ -1,17 +1,21 @@
-use std::{sync::Arc};
+use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 
+use tokio::task::AbortHandle;
+use tokio_stream::wrappers::BroadcastStream;
 use webrtc::{rtp::packet::Packet, track::track_local::{TrackLocalWriter, track_local_static_rtp::TrackLocalStaticRTP}};
 
-use crate::{actor::{Actor},  error::Error};
+use crate::{actor::Actor,  error::Error, room::StreamQuality};
 
 pub struct VideoPacketForwarder {
     pub track: Arc<TrackLocalStaticRTP>,
+    pub current_quality: Option<StreamQuality>,
+    pub current_task: Option<(AbortHandle, Arc<AtomicUsize>)>,
+    pub pending_task: Option<(AbortHandle, Arc<AtomicUsize>)>,
     last_sequence_number: u16,
     last_timestamp: u32,
     sequence_number_offset: i32,
     timestamp_offset: i32,
-    is_layer_switched: bool,
-    awaiting_key_frame: bool,
+    is_layer_switching: bool,
 }
 
 impl VideoPacketForwarder {
@@ -23,35 +27,39 @@ impl VideoPacketForwarder {
             sequence_number_offset: 0,
             timestamp_offset: 0,
             // Стартуем в режиме ожидания первого ключевого кадра
-            is_layer_switched: false, 
-            awaiting_key_frame: false,
+            is_layer_switching: false, 
+            current_quality: None,
+            current_task: None,
+            pending_task: None,
         }
     }
 }
 
 pub enum VideoPacketForwarderMessage {
-    RtpPacket (Packet),
-    LayerSwitched
+    RtpPacket { packet: Packet, quality: StreamQuality },
+    LayerSwitched { stream: BroadcastStream<Packet>, quality: StreamQuality, active_receivers: Arc<AtomicUsize> }
 }
 
 impl VideoPacketForwarder {
-    async fn forward(&mut self, mut packet: Packet) -> Result<(), Error> {
-        if self.is_layer_switched {
-            self.update_offsets_on_layer_switch(&packet);
-            self.is_layer_switched = false;
-            self.awaiting_key_frame = true;
-            return Ok(());
-        }
-        if self.awaiting_key_frame {
+    async fn forward(&mut self, quality: StreamQuality, mut packet: Packet) -> Result<(), Error> {
+        if self.is_layer_switching && self.current_quality != Some(quality) {
             if is_key_frame(&packet) {
-                self.awaiting_key_frame = false;
+                self.update_offsets_on_layer_switch(&packet);
+                self.current_quality = Some(quality);
+                if let Some((pending_task, active_receivers)) = self.pending_task.take() {
+                    if let Some((cancelled_task, active_receivers)) = self.current_task.replace((pending_task, active_receivers)) {
+                        cancelled_task.abort();
+                        active_receivers.fetch_sub(1, Ordering::Relaxed);
+                    }
+                }
             } else {
                 return Ok(());
             }
         }
-        self.apply_offsets(&mut packet);
-        // Отправляем модифицированный пакет в WebRTC трек зрителю
-        self.track.write_rtp(&packet).await?;
+        if self.current_quality == Some(quality) {
+            self.apply_offsets(&mut packet);
+            self.track.write_rtp(&packet).await?;
+        }
         Ok(())
     }
      fn update_offsets_on_layer_switch(&mut self, packet: &Packet) {
@@ -86,11 +94,17 @@ impl Actor for VideoPacketForwarder {
     }
     async fn handle(&mut self, ctx: &mut crate::actor::Ctx<'_, Self>, msg: Self::Message) {
         match msg {
-            VideoPacketForwarderMessage::LayerSwitched => {
-                self.is_layer_switched = true;
+            VideoPacketForwarderMessage::LayerSwitched {quality, stream, active_receivers } => {
+                self.is_layer_switching = true;
+                active_receivers.fetch_add(1, Ordering::Relaxed);
+                let task = ctx.addr.add_stream(stream, move |r| match r {
+                    Ok(packet) => crate::actor::StreamItem::Next(VideoPacketForwarderMessage::RtpPacket { packet, quality }),
+                    Err(_) => crate::actor::StreamItem::Close
+                });
+                self.pending_task = Some((task, active_receivers));
             },
-            VideoPacketForwarderMessage::RtpPacket(packet) => {
-                if let Err(e) = self.forward(packet).await {
+            VideoPacketForwarderMessage::RtpPacket {packet, quality} => {
+                if let Err(e) = self.forward(quality, packet).await {
                     tracing::error!("[PacketForwarder] write_rtp {e}");
                     self.stop(ctx).await;
                 }
