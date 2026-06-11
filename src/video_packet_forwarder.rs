@@ -1,4 +1,4 @@
-use std::sync::{Arc};
+use std::{collections::VecDeque, sync::Arc};
 
 use webrtc::{rtp::packet::Packet, track::track_local::{TrackLocalWriter, track_local_static_rtp::TrackLocalStaticRTP}};
 
@@ -10,6 +10,7 @@ pub struct VideoPacketForwarder {
     current_quality: Option<StreamQuality>,
     current_channel: Option<Addr<RtpPacketForwarder<Self>>>,
     pending_channel: Option<Addr<RtpPacketForwarder<Self>>>,
+    key_frame_buffer: VecDeque<Packet>,
     last_sequence_number: u16,
     last_timestamp: u32,
     sequence_number_offset: i32,
@@ -26,6 +27,7 @@ impl VideoPacketForwarder {
             last_timestamp: 0,
             sequence_number_offset: 0,
             timestamp_offset: 0,
+            key_frame_buffer: VecDeque::new(),
             // Стартуем в режиме ожидания первого ключевого кадра
             is_layer_switching: false, 
             current_quality: None,
@@ -51,8 +53,7 @@ impl From<(StreamQuality, Packet)> for VideoPacketForwarderMessage {
 impl VideoPacketForwarder {
     async fn forward(&mut self, ctx: &Ctx<'_, Self>, quality: StreamQuality, mut packet: Packet) -> Result<(), Error> {
         if self.is_layer_switching && self.current_quality != Some(quality) {
-            tracing::info!("is_layer_switching");
-            self.handle_pending_packets(ctx, quality, &mut packet).await?;
+            self.handle_pending_packets(ctx, quality, packet).await?;
             return Ok(());
         }
         if self.current_quality == Some(quality) {
@@ -61,7 +62,7 @@ impl VideoPacketForwarder {
         }
         Ok(())
     }
-    async fn handle_pending_packets(&mut self, ctx: &Ctx<'_, Self>, quality: StreamQuality, mut packet: &mut Packet) -> Result<(), Error> {
+    async fn handle_pending_packets(&mut self, ctx: &Ctx<'_, Self>, quality: StreamQuality, mut packet: Packet) -> Result<(), Error> {
         let is_key_frame = match self.mime_type {
             MimeType::H264 => is_h264_key_frame(&packet.payload),
             MimeType::VP8 => is_vp8_key_frame(&packet),
@@ -69,6 +70,11 @@ impl VideoPacketForwarder {
             _ => unreachable!()
         };
         if is_key_frame {
+            let is_key_frame_end = packet.header.marker;
+            if !is_key_frame_end {
+                self.key_frame_buffer.push_front(packet);
+                return Ok(());
+            }
             self.update_offsets_on_layer_switch(&packet);
             self.current_quality = Some(quality);
             self.is_layer_switching = false;
@@ -76,6 +82,10 @@ impl VideoPacketForwarder {
                 if let Some(cancelled_channel) = self.current_channel.replace(pending_channel) {
                     let _ = cancelled_channel.do_send(RtpPacketForwarderMessage::Unsubscribe(ctx.addr.clone()));
                 }
+            }
+            while let Some(mut packet) = self.key_frame_buffer.pop_back() {
+                self.apply_offsets(&mut packet);
+                self.track.write_rtp(&packet).await?;
             }
             self.apply_offsets(&mut packet);
             self.track.write_rtp(&packet).await?;

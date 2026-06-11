@@ -52,7 +52,6 @@ impl Display for MimeType {
 impl FromStr for MimeType {
     type Err = Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        println!("{s}");
         match s {
             "video/VP8" => Ok(MimeType::VP8),
             "video/VP9" => Ok(MimeType::VP9),

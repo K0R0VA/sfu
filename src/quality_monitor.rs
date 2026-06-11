@@ -120,7 +120,7 @@ impl Actor for QualityMonitor {
         
     }
     async fn starting(&mut self, ctx: &crate::actor::Ctx<'_, Self>) {
-        let stream = tokio_stream::wrappers::IntervalStream::new(interval(Duration::from_secs(30)));
+        let stream = tokio_stream::wrappers::IntervalStream::new(interval(Duration::from_secs(3)));
         ctx.addr.add_stream(stream, |_| StreamItem::Next(QualityMonitorMessage::Ping));
         tracing::info!("[QualityMonitor] starting")
     }
