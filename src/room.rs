@@ -1,4 +1,4 @@
-use std::{collections::{HashMap}, str::FromStr};
+use std::{collections::HashMap, fmt::{Display}, str::FromStr};
 use uuid::Uuid;
 
 use crate::{PacketAudioSubscription, PacketVideoSubscription, actor::{Actor, Addr, Ctx}, error::Error, pli_sender::Ping, user::{ConnectionRequest, User, UserMessage}};
@@ -25,15 +25,52 @@ impl Peer {
 
 pub struct PeerStream<T> {
     pub packet_subscription: T,
-    pub mime_type: String,
+    pub mime_type: MimeType,
 }
+
+#[derive(Clone, Default)]
+pub enum MimeType {
+    #[default]
+    VP8,
+    VP9,
+    H264,
+    Audio (String)
+}
+
+impl Display for MimeType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MimeType::H264 => write!(f, "video/H264"),
+            MimeType::VP8 => write!(f, "video/VP8"),
+            MimeType::VP9 => write!(f, "video/VP9"),
+            MimeType::Audio(audio) => write!(f, "{audio}")
+
+        }
+    }
+}
+
+impl FromStr for MimeType {
+    type Err = Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        println!("{s}");
+        match s {
+            "video/VP8" => Ok(MimeType::VP8),
+            "video/VP9" => Ok(MimeType::VP9),
+            "video/H264" => Ok(MimeType::H264),
+            mime_type => Ok(MimeType::Audio(mime_type.to_string()))
+        }
+    }
+}
+
+
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, Ord, PartialOrd)]
 #[repr(u8)]
 pub enum StreamQuality {
-    Low = 0,
-    Mid = 1,
-    High = 2,
+    Audio = 0,
+    Low = 1,
+    Mid = 2,
+    High = 3,
 }
 
 impl FromStr for StreamQuality {
@@ -104,7 +141,7 @@ impl Actor for Room {
     async fn starting(&mut self, _: &Ctx<'_, Self>) {
         tracing::info!("🟢 [RoomActor] Комната инициализирована.");
     }
-    async fn stopping(&mut self, _ctx: &Ctx<'_, Self>) {
+    async fn stopping(self, _ctx: &Ctx<'_, Self>) {
         for (_, Peer { user, .. }) in self.peers.iter() {
             let _ = user.send(UserMessage::RoomClosed).await;
         }

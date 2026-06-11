@@ -1,4 +1,4 @@
-import { PeerConnection } from "./webrtc";
+import { PeerConnection, getDeviceType } from "./webrtc";
 
 export class UserWebsocket {
     constructor(users, roomStatus, isConnecting, isJoined) {
@@ -28,6 +28,7 @@ export class UserWebsocket {
                     video: {
                         width: { ideal: 1280 },
                         height: { ideal: 720 },
+                        frameRate: { ideal: 60 }
                     },
                     audio: {
                         echoCancellation: true,        // Подавление эха (критически важно!)
@@ -39,6 +40,12 @@ export class UserWebsocket {
                     }
                 });
                 await this.peer_connection.add_stream(stream);
+                const device_type = getDeviceType();
+                this.ws.send(JSON.stringify({
+                    target: "publisher",
+                    type: "connection",
+                    device_type
+                }))
                 this.users.value.set(this.peer_id, {
                     stream,
                     isLocal: true
@@ -78,13 +85,12 @@ export class UserWebsocket {
             console.log(e);
         }
         finally {
+            this.peer_id = null;
             this.users.value.clear();
             this.isJoined.value = false;
             this.isJoined.value = false;
             this.roomStatus.value = 'Готов к подключению';
         }
-        
-        
     }
 }
 

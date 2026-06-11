@@ -1,11 +1,10 @@
-use std::{collections::HashMap, str::FromStr, sync::{Arc, atomic::AtomicUsize}, time::Duration};
+use std::{collections::HashMap, str::FromStr, sync::{Arc}};
 use axum::extract::ws::{Message, WebSocket};
 use futures_util::{SinkExt, stream::{SplitSink}};
 use serde::{Deserialize, Serialize};
-use tokio::time::interval;
 use uuid::Uuid;
-use webrtc::{api::{APIBuilder, interceptor_registry::register_default_interceptors, media_engine::MediaEngine, setting_engine::SettingEngine}, ice_transport::{ice_candidate::RTCIceCandidateInit, ice_server::RTCIceServer}, interceptor::registry::Registry, peer_connection::{RTCPeerConnection, configuration::RTCConfiguration, peer_connection_state::RTCPeerConnectionState, sdp::session_description::RTCSessionDescription, signaling_state::RTCSignalingState}, rtp_transceiver::rtp_codec::{RTCRtpHeaderExtensionCapability, RTPCodecType}};
-use crate::{PacketAudioSubscription, PacketVideoSubscription, actor::{Actor, Addr, Ctx, StreamItem}, audio_subscription::AudioSubscription, error::Error, forward_rtp_packets, pli_sender::{Ping, PliSender}, quality_monitor::QualityMonitor, room::{PeerStream, Room, RoomMessage, StreamQuality}, video_subscription::{VideoSubscription, VideoSubscriptionMessage}};
+use webrtc::{api::{APIBuilder, interceptor_registry::register_default_interceptors, media_engine::MediaEngine, setting_engine::SettingEngine}, ice_transport::{ice_candidate::RTCIceCandidateInit, ice_server::RTCIceServer}, interceptor::registry::Registry, peer_connection::{RTCPeerConnection, configuration::RTCConfiguration,  sdp::session_description::RTCSessionDescription, signaling_state::RTCSignalingState}, rtp_transceiver::rtp_codec::{RTCRtpHeaderExtensionCapability, RTPCodecType}};
+use crate::{PacketAudioSubscription, PacketVideoSubscription, actor::{Actor, Addr, Ctx}, audio_packet_forwarder::AudioPacketForwarder, audio_subscription::AudioSubscription, error::Error, pli_sender::PliSender, quality_monitor::{DeviceType, QualityMonitor, QualityThresholds}, room::{MimeType, PeerStream, Room, RoomMessage, StreamQuality}, rtp_packet_forwarder::RtpPacketForwarder, video_packet_forwarder::VideoPacketForwarder, video_subscription::{VideoSubscription, VideoSubscriptionMessage}};
 
 pub struct User {
     pub room: Addr<Room>,
@@ -104,7 +103,7 @@ pub enum UserMessage {
 pub struct ConnectionRequest<T> {
     pub speaker_id: Uuid,
     pub stream: T,
-    pub codec_mime_type: String,
+    pub codec_mime_type: MimeType,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -133,7 +132,7 @@ impl Actor for User {
                 }
             }
             UserMessage::Websocket { message } => {
-                if let Err(e) = self.handle_ws_message(message).await {
+                if let Err(e) = self.handle_ws_message(ctx, message).await {
                     tracing::error!("👤 [UserActor] UserMessage::Websocket {:?}", e);
                     self.stop(ctx).await;
                 }
@@ -160,7 +159,6 @@ impl Actor for User {
         }
     }   
     async fn starting(&mut self, ctx: &Ctx<'_, Self>) {
-        self.qualify_monitor = Some(QualityMonitor::new(self.publisher_pc.clone(), ctx.addr.clone()).start());
         if let Err(e) = self.send_welcome().await {
             tracing::error!("[User] send_welcome {e}");
             return;
@@ -218,19 +216,20 @@ impl Actor for User {
             let publisher_pc = publisher_pc.clone();
             let ssrc = track.ssrc();
             let mime_type = track.codec().capability.mime_type;
+            let mime_type = MimeType::from_str(&mime_type).map_err(|e| {
+                tracing::error!("{e}");
+                e
+            }).unwrap_or_default();
             let kind = track.kind();
             let rid = StreamQuality::from_str(track.rid());
             
             Box::pin(async move {
                 tracing::info!("[SFU] {kind} от {peer_id} подключен");
-                let (tx, stream) = tokio::sync::broadcast::channel(16);
-                let active_receiver_counter =  Arc::new(AtomicUsize::new(0));
-                let stream = Arc::new(stream);
                 let mesage = match kind {
                         RTPCodecType::Audio | RTPCodecType::Unspecified => { 
+                            let rtp_packet_forwarder= RtpPacketForwarder::<AudioPacketForwarder>::spawn(track);
                             let packet_subscription = PacketAudioSubscription { 
-                                active_receiver_counter: active_receiver_counter.clone(), 
-                                stream, 
+                                rtp_packet_forwarder
                             };
                             RoomMessage::AddAudioTrack { 
                             stream: PeerStream {
@@ -241,13 +240,13 @@ impl Actor for User {
                         }
                     },
                     RTPCodecType::Video => {
-                        let pli_sender = PliSender::new(publisher_pc, ssrc).start();
-                        let packet_subscription = PacketVideoSubscription { 
-                            active_receiver_counter: active_receiver_counter.clone(), 
-                            pli_sender,
-                            stream, 
-                        };
                         let quality = rid.unwrap_or(StreamQuality::High);
+                        let pli_sender = PliSender::new(publisher_pc, ssrc).start();
+                        let rtp_packet_forwarder= RtpPacketForwarder::<VideoPacketForwarder>::spawn(track, quality);
+                        let packet_subscription = PacketVideoSubscription { 
+                            rtp_packet_forwarder,
+                            pli_sender,
+                        };
                         RoomMessage::AddVideoTrack { 
                             stream: PeerStream {
                                 mime_type,
@@ -259,16 +258,17 @@ impl Actor for User {
                     }   
                 };
                 let _ = room.send(mesage).await;
-                tokio::spawn(async move {
-                    if let Err(e) = forward_rtp_packets(&track, &tx, &active_receiver_counter).await {
-                        tracing::error!("[SFU] forward_rtp_packets failed {e}");
-                    }
-                });
             })
         }));
         tracing::info!("🟢 [Userctor] Пользователь инициализирован.");
     }
-    async fn stopping(&mut self, _: &Ctx<'_, Self>) {
+    async fn stopping(self, _: &Ctx<'_, Self>) {
+        for sub in self.audio_subscriptions.values() {
+            sub.terminate().await;
+        }
+        for sub in self.video_subscriptions.values() {
+            sub.terminate().await;
+        }
         if let Err(e) = self.publisher_pc.close().await {
             tracing::error!("[UserActor] publisher_pc.close() {e}");
         }
@@ -295,6 +295,9 @@ pub enum MessageType {
     Candidate { 
         #[serde(flatten)]
         candidate: IceCandidate 
+    },
+    Connection {
+        device_type: DeviceType
     }
 }
 
@@ -322,19 +325,16 @@ impl User {
         self.ws_tx.send(serde_json::to_string(&welcome_payload)?.into()).await?;
         Ok(())
     }
-    async fn handle_ws_message(&mut self, message: Result<Message, Error>) -> Result<(), Error> {
+    async fn handle_ws_message(&mut self, ctx: &mut Ctx<'_, Self>, message: Result<Message, Error>) -> Result<(), Error> {
         let text = match message? {
             Message::Close(_) => {
-                let _ = self.room.send(RoomMessage::Leave { peer_id: self.peer_id.clone() }).await;
+                self.stop(ctx).await;
                 return Ok(());
             },
             Message::Text(text) => text,
             _ => return Ok(())
         };
-        let sdp: SignalMessage = serde_json::from_str(&text).map_err(|e| {
-            println!("{text}");
-            e
-        })?;
+        let sdp: SignalMessage = serde_json::from_str(&text)?;
         match (sdp.target, sdp.message_type) {
             (Target::Publisher, MessageType::Offer {sdp}) => {
                 let offer_desc = RTCSessionDescription::offer(sdp)?;
@@ -375,6 +375,10 @@ impl User {
                 };
                 self.subscriber_pc.add_ice_candidate(candidate_init).await?;
             },
+            (_, MessageType::Connection { device_type }) => {
+                let thresholds = QualityThresholds::from(device_type);
+                self.qualify_monitor = Some(QualityMonitor::new(self.publisher_pc.clone(), ctx.addr.clone(), thresholds).start());
+            }
             (target, r#type) => {
                 println!("{:?} {:?}",  target, r#type);
             }
@@ -427,11 +431,14 @@ impl User {
         Ok(())
     }
     async fn disconnect_from_user(&mut self, speaker_id: Uuid) -> Result<(), Error> {
-        // let subscription = self.subscriptions
-        //     .remove(&speaker_id)
-        //     .ok_or(Error::SystemError { message: "subscription not found".into() })?;
-        // subscription.disconnect(&self.peer_connection).await?;
-        
+        let audio_subscription = self.audio_subscriptions
+            .remove(&speaker_id)
+            .ok_or(Error::SystemError { message: "subscription not found".into() })?;
+        audio_subscription.terminate().await;
+        let video_subscription = self.video_subscriptions
+            .remove(&speaker_id)
+            .ok_or(Error::SystemError { message: "subscription not found".into() })?;
+        video_subscription.terminate().await;
         let notice = serde_json::json!({
             "type": "peer_left",
             "peer_id": speaker_id

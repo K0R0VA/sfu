@@ -1,15 +1,14 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use axum::response::Response;
 use futures_util::{StreamExt};
 use tower_http::services::ServeDir;
 use webrtc::rtp::packet::Packet;
-use webrtc::track::track_remote::TrackRemote;
 use crate::actor::{Actor, Addr};
-use crate::error::Error;
+use crate::audio_packet_forwarder::AudioPacketForwarder;
 use crate::pli_sender::PliSender;
 use crate::room::{Room, RoomMessage};
+use crate::rtp_packet_forwarder::RtpPacketForwarder;
 use crate::user::{User};
+use crate::video_packet_forwarder::VideoPacketForwarder;
 pub mod actor;
 pub mod error;
 pub mod room;
@@ -20,7 +19,7 @@ pub mod video_packet_forwarder;
 pub mod audio_subscription;
 pub mod audio_packet_forwarder;
 pub mod pli_sender;
-// pub mod rtp_packet_forwarder;
+pub mod rtp_packet_forwarder;
 
 use axum::{
     routing::get,
@@ -81,31 +80,15 @@ async fn try_connect_websocket(
     Ok(())
 }
 
-async fn forward_rtp_packets(track: &TrackRemote, channel: &PacketSender, active_receiver_counter: &AtomicUsize) -> Result<(), Error> {
-    loop {
-        let (packet, _) = track.read_rtp().await?;
-        let active_receiver_count = active_receiver_counter.load(Ordering::Relaxed);
-        if active_receiver_count == 0 {
-            continue; 
-        }
-        channel.send(packet).map_err(|_| Error::SystemError { message: "failed send packet".into() })?;
-    }
-}
-
-pub type PacketStream = Arc<tokio::sync::broadcast::Receiver<Packet>>;
 pub type PacketSender = tokio::sync::broadcast::Sender<Packet>;
-
-pub type ActiveReceiverCounter = Arc<AtomicUsize>;
 
 #[derive(Clone)]
 pub struct PacketVideoSubscription {
-    pub stream: PacketStream,
     pub pli_sender: Addr<PliSender>,
-    pub active_receiver_counter: ActiveReceiverCounter
+    pub rtp_packet_forwarder: Addr<RtpPacketForwarder<VideoPacketForwarder>>
 }
 
 #[derive(Clone)]
 pub struct PacketAudioSubscription {
-    pub stream: PacketStream,
-    pub active_receiver_counter: ActiveReceiverCounter
+    pub rtp_packet_forwarder: Addr<RtpPacketForwarder<AudioPacketForwarder>>
 }

@@ -12,7 +12,7 @@ pub struct PliSender {
 
 impl PliSender {
     pub fn new(pc: Arc<RTCPeerConnection>, ssrc: u32) -> Self {
-        let instant = Instant::now() - Duration::from_secs(2);
+        let instant = Instant::now() - Duration::from_secs(6);
         Self {
             instant,
             pc,
@@ -28,12 +28,12 @@ impl Actor for PliSender {
     async fn starting(&mut self, _ctx: &crate::actor::Ctx<'_, Self>) {
         tracing::info!("[PliSender] starting");
     }
-    async fn stopping(&mut self, _ctx: &crate::actor::Ctx<'_, Self>) {
+    async fn stopping(self, _ctx: &crate::actor::Ctx<'_, Self>) {
         tracing::info!("[PliSender] stopping");
     }
     async fn handle(&mut self, ctx: &mut crate::actor::Ctx<'_, Self>, _: Self::Message) {
         let elapsed = self.instant.elapsed();
-        if elapsed < Duration::from_millis(1500) { 
+        if elapsed < Duration::from_secs(5) { 
             return;
         }
         tracing::info!("[PliSender] Send");

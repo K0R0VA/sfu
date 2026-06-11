@@ -1,17 +1,17 @@
-use std::sync::Arc;
+use std::{hash::Hash, sync::{Arc}};
 
 use futures_util::StreamExt;
-use tokio::{sync::{Mutex, mpsc::error::SendError}, task::AbortHandle};
+use tokio::{sync::{Mutex, mpsc::error::{SendError, TrySendError}}, task::AbortHandle};
+use uuid::Uuid;
 
 pub trait Actor: Sized + Send + 'static {
     type Message: Sized + Send + 'static;
     fn handle(&mut self, ctx: &mut Ctx<'_, Self>, m: Self::Message) -> impl Future<Output = ()> + Send;
     fn starting(&mut self, ctx: &Ctx<'_, Self>) -> impl Future<Output = ()> + Send;
-    fn stopping(&mut self, ctx: &Ctx<'_, Self>) -> impl Future<Output = ()> + Send;
+    fn stopping(self, ctx: &Ctx<'_, Self>) -> impl Future<Output = ()> + Send;
     fn stop(&mut self, ctx: &mut Ctx<'_, Self>) -> impl Future<Output = ()> + Send {
         async move {
             ctx.should_stop = true;
-            self.stopping(ctx).await;
         }
     }
     fn start(self) -> Addr<Self> {
@@ -35,15 +35,30 @@ async fn handle_messages<A: Actor>(actor: &mut A, ctx: &mut Ctx<'_, A>, mut mess
         }
     }
 }
-
  pub struct Addr<A: Actor> {
+    id: Uuid,
     requests: tokio::sync::mpsc::Sender<<A as Actor>::Message>,
     terminate_call: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>
+}
+
+impl<A: Actor> PartialEq for Addr<A> {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl<A: Actor> Eq for Addr<A> {}
+
+impl<A: Actor> Hash for Addr<A> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
 }
 
 impl<A: Actor> Clone for Addr<A> {
     fn clone(&self) -> Self {
         Addr {
+            id: self.id.clone(),
             requests: self.requests.clone(),
             terminate_call: self.terminate_call.clone()
         }
@@ -54,7 +69,7 @@ impl<A: Actor> Addr<A> {
     fn spawn(mut actor: A, capacity: usize) -> Self {
         let (requests, messages) = tokio::sync::mpsc::channel(capacity);
         let (terminate_call, terminate) = tokio::sync::oneshot::channel();
-        let addr = Addr { requests, terminate_call: Arc::new(Mutex::new(Some(terminate_call))) };
+        let addr = Addr { id: Uuid::new_v4(), requests, terminate_call: Arc::new(Mutex::new(Some(terminate_call))) };
         tokio::spawn({
             let ctx_addr = addr.clone();
             async move {
@@ -76,6 +91,10 @@ impl<A: Actor> Addr<A> {
     }
     pub async fn send(&self, m: <A as Actor>::Message) -> Result<(), SendError<<A as Actor>::Message>> {
         self.requests.send(m).await?;
+        Ok(())
+    }
+     pub fn do_send(&self, m: <A as Actor>::Message) -> Result<(), TrySendError<<A as Actor>::Message>> {
+        self.requests.try_send(m)?;
         Ok(())
     }
     pub fn add_stream<S, F>(&self, mut stream: S, mapper: F) -> AbortHandle
@@ -126,7 +145,7 @@ use crate::actor::{Actor, Ctx};
             async {}
         }
         
-        fn stopping(&mut self, _ctx: &Ctx<'_, Self>) -> impl Future<Output = ()> + Send {
+        fn stopping(self, _ctx: &Ctx<'_, Self>) -> impl Future<Output = ()> + Send {
             async {
                 println!("stopping");
             }

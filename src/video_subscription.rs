@@ -1,10 +1,8 @@
-use std::{collections::HashMap, sync::{Arc, atomic::Ordering}, time::Duration};
-
-use tokio::task::AbortHandle;
+use std::{collections::HashMap, sync::{Arc}};
 use uuid::Uuid;
-use webrtc::{peer_connection::RTCPeerConnection, rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication, rtp_transceiver::{RTCRtpTransceiverInit, rtp_codec::RTCRtpCodecCapability, rtp_sender::RTCRtpSender, rtp_transceiver_direction::RTCRtpTransceiverDirection}, track::track_local::{track_local_static_rtp::TrackLocalStaticRTP, track_local_static_sample::TrackLocalStaticSample}};
+use webrtc::{peer_connection::RTCPeerConnection, rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication, rtp_transceiver::{RTCRtpTransceiverInit, rtp_codec::RTCRtpCodecCapability, rtp_sender::RTCRtpSender, rtp_transceiver_direction::RTCRtpTransceiverDirection}, track::track_local::{track_local_static_rtp::TrackLocalStaticRTP}};
 
-use crate::{PacketVideoSubscription, actor::{Actor, Addr}, error::Error, pli_sender::Ping, quality_monitor::{QualityMonitor, QualityMonitorMessage}, room::StreamQuality, video_packet_forwarder::{VideoPacketForwarder, VideoPacketForwarderMessage}, video_subscription::VideoSubscriptionMessage::ForcePli};
+use crate::{PacketVideoSubscription, actor::{Actor, Addr}, error::Error, pli_sender::Ping, room::{MimeType, StreamQuality}, video_packet_forwarder::{VideoPacketForwarder, VideoPacketForwarderMessage}, video_subscription::VideoSubscriptionMessage::ForcePli};
 
 pub struct VideoSubscription {
     pub pc: Arc<RTCPeerConnection>,
@@ -16,11 +14,11 @@ pub struct VideoSubscription {
 }
 
 impl VideoSubscription {
-    pub async fn new(pc: Arc<RTCPeerConnection>, peer_id: Uuid, mime_type: String, stream: PacketVideoSubscription, quality: StreamQuality) -> Result<Self, Error> {
+    pub async fn new(pc: Arc<RTCPeerConnection>, peer_id: Uuid, mime_type: MimeType, stream: PacketVideoSubscription, quality: StreamQuality) -> Result<Self, Error> {
         let mut connections = HashMap::with_capacity(3);
         let track: Arc<TrackLocalStaticRTP> = Arc::new(TrackLocalStaticRTP::new(
             RTCRtpCodecCapability {
-                mime_type: mime_type.clone(),
+                mime_type: mime_type.to_string(),
                 ..Default::default()
             },
             "video".to_string(),
@@ -33,7 +31,8 @@ impl VideoSubscription {
             .await?
             .sender()
             .await;
-        let packet_forwarder = VideoPacketForwarder::new(track.clone()).start();
+        let packet_forwarder = VideoPacketForwarder::new(track.clone(), mime_type)
+            .start_with_capacity(256);
         connections.insert(quality, stream.clone());
         let this = Self { pc, peer_id, connections, active_track, active_quality: quality, packet_forwarder,   };
         Ok(this) 
@@ -62,15 +61,13 @@ impl Actor for VideoSubscription {
                 }
             }
             VideoSubscriptionMessage::SwitchQualityLayer { to  } => {
-                tracing::info!("[VideoSubscription] SwitchQualityLayer {:?}", to);
-                if let Some(PacketVideoSubscription { stream, pli_sender, active_receiver_counter }) = self.connections.get(&to) {
-                    let _ = pli_sender.send(Ping).await;
-                    let stream = tokio_stream::wrappers::BroadcastStream::new(stream.resubscribe());
+                if let Some(PacketVideoSubscription {  pli_sender, rtp_packet_forwarder }) = self.connections.get(&to) {
+                    tracing::info!("[VideoSubscription] SwitchQualityLayer {:?}", to);
                     let _ = self.packet_forwarder.send(VideoPacketForwarderMessage::LayerSwitched {
-                        stream,
-                        active_receivers: active_receiver_counter.clone(),
-                        quality: to
+                        quality: to,
+                        forwarder: rtp_packet_forwarder.clone()
                     }).await;
+                    let _ = pli_sender.send(Ping).await;
                 }
             },
             VideoSubscriptionMessage::Drop => self.stop(ctx).await,
@@ -91,21 +88,17 @@ impl Actor for VideoSubscription {
                 }
             }
         });
-        let (quality, PacketVideoSubscription {active_receiver_counter, stream, ..}) = self.connections.iter().next().unwrap();
-        let stream = tokio_stream::wrappers::BroadcastStream::new(stream.resubscribe());
-        let _ = self.packet_forwarder.send(VideoPacketForwarderMessage::LayerSwitched {
-            stream,
-            active_receivers: active_receiver_counter.clone(),
-            quality: *quality
+        let (quality, PacketVideoSubscription {rtp_packet_forwarder, ..}) = self.connections.iter().next().unwrap();
+        let _ = self.packet_forwarder.send(VideoPacketForwarderMessage::Start {
+            quality: *quality,
+            forwarder: rtp_packet_forwarder.clone()
         }).await;
         
         tracing::info!("[VideoSubscription] starting");
     }
 
-    async fn stopping(&mut self, _: &crate::actor::Ctx<'_, Self>) {
-        if let Some(active_connection) = self.connections.get(&self.active_quality) {
-            active_connection.active_receiver_counter.fetch_sub(1, Ordering::Relaxed);
-        }
+    async fn stopping(mut self, _: &crate::actor::Ctx<'_, Self>) {
+        self.packet_forwarder.terminate().await;
         self.connections.clear();
         if let Err(e) = self.pc.remove_track(&self.active_track).await {
             tracing::error!("[VideoSubscription] remove_track {e}");

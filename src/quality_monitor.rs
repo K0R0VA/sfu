@@ -1,5 +1,6 @@
 use std::{sync::Arc, time::{Duration, Instant}};
 
+use serde::{Deserialize, Serialize};
 use tokio::time::{interval};
 use webrtc::{peer_connection::RTCPeerConnection, stats::StatsReportType};
 
@@ -8,14 +9,58 @@ use crate::{actor::{Actor, Addr, StreamItem}, room::StreamQuality, user::{User, 
 pub struct QualityMonitor {
     pc: Arc<RTCPeerConnection>,
     user: Addr<User>,
+    last_stats_time: Instant,
+    consecutive_high_signals: usize, 
+    current_quality: Option<StreamQuality>, 
+    current_stats: CurrentStats,
+    thresholds: QualityThresholds
+}
+
+#[derive(Default)]
+pub struct CurrentStats {
     packet_loss: f64,
     bitrate_bps: u64,
     last_packets_received: u64,
     last_bytes_received: u64,
     last_nack_count: u64,
-    last_stats_time: Instant,
-    current_quality: StreamQuality, 
-    consecutive_high_signals: usize, 
+}
+pub struct QualityThresholds {
+    low_bitrate: u64,
+    mid_bitrate: u64,
+    high_bitrate: u64,
+    low_loss: f64,
+    mid_loss: f64,
+    high_loss: f64,
+}
+
+impl From<DeviceType> for QualityThresholds {
+    fn from(value: DeviceType) -> Self {
+        match value {
+            DeviceType::Desktop => QualityThresholds {
+                low_bitrate: 150_000,
+                mid_bitrate: 350_000,
+                high_bitrate: 1_200_000,
+                low_loss: 15.0,
+                mid_loss: 8.0,
+                high_loss: 2.0,
+            },
+            DeviceType::Mobile => QualityThresholds {
+                low_bitrate: 75_000,
+                mid_bitrate: 200_000,
+                high_bitrate: 600_000,
+                low_loss: 15.0,
+                mid_loss: 8.0,
+                high_loss: 2.0,
+            },
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceType {
+    Desktop,
+    Mobile,
 }
 
 #[derive(Clone, Copy)]
@@ -31,7 +76,17 @@ impl Actor for QualityMonitor {
             QualityMonitorMessage::Ping  => {
                 self.update_stats().await;
                 if let Some(quality) = self.get_quality() {
-                    let should_switch = match quality.cmp(&self.current_quality) {
+                    let current_quality = match self.current_quality {
+                        Some(current_quality) => current_quality,
+                        None => {
+                            self.current_quality = Some(quality);
+                            let _ = self.user
+                                .send(UserMessage::SwitchQualityLayer { quality })
+                                .await;
+                            return;
+                        }
+                    };
+                    let should_switch = match quality.cmp(&current_quality) {
                         std::cmp::Ordering::Equal => {
                             self.consecutive_high_signals = 0;
                             false
@@ -42,7 +97,7 @@ impl Actor for QualityMonitor {
                         }
                         std::cmp::Ordering::Greater => {
                             self.consecutive_high_signals += 1;
-                            false
+                            true
                         },
                         std::cmp::Ordering::Less => {
                             self.consecutive_high_signals = 0;
@@ -50,7 +105,8 @@ impl Actor for QualityMonitor {
                         }
                     };
                     if should_switch {
-                        self.current_quality = quality;
+                        tracing::info!("[QualityMonitor] {:?} last_bytes_received {} bitrate_bps {} packet_loss {}", quality, self.current_stats.last_bytes_received, self.current_stats.bitrate_bps, self.current_stats.packet_loss);
+                        self.current_quality = Some(quality);
                         let _ = self.user
                             .send(UserMessage::SwitchQualityLayer { quality })
                             .await;
@@ -64,27 +120,24 @@ impl Actor for QualityMonitor {
         
     }
     async fn starting(&mut self, ctx: &crate::actor::Ctx<'_, Self>) {
-        let stream = tokio_stream::wrappers::IntervalStream::new(interval(Duration::from_secs(3)));
+        let stream = tokio_stream::wrappers::IntervalStream::new(interval(Duration::from_secs(30)));
         ctx.addr.add_stream(stream, |_| StreamItem::Next(QualityMonitorMessage::Ping));
         tracing::info!("[QualityMonitor] starting")
     }
-    async fn stopping(&mut self, _ctx: &crate::actor::Ctx<'_, Self>) {
+    async fn stopping(self, _ctx: &crate::actor::Ctx<'_, Self>) {
         tracing::info!("[QualityMonitor] Stopping")
     }
 }
 
 impl QualityMonitor {
-    pub fn new(pc: Arc<RTCPeerConnection>, user: Addr<User>) -> Self {
+    pub fn new(pc: Arc<RTCPeerConnection>, user: Addr<User>, thresholds: QualityThresholds) -> Self {
         Self {
             pc,
             user,
-            bitrate_bps: 0,
-            packet_loss: 0.,
-            last_bytes_received: 0,
-            last_nack_count: 0,
-            last_packets_received: 0,
+            current_stats: CurrentStats::default(),
+            thresholds,
             last_stats_time: Instant::now(),
-            current_quality: StreamQuality::High,
+            current_quality: None,
             consecutive_high_signals: 0
         }
     }
@@ -110,45 +163,36 @@ impl QualityMonitor {
                 _ => {}
             }
         }
-        if self.last_bytes_received > 0 && total_bytes_received > self.last_bytes_received && elapsed_secs > 0.0 {
-            let bytes_diff = total_bytes_received.saturating_sub(self.last_bytes_received);
-            self.bitrate_bps = ((bytes_diff * 8) as f64 / elapsed_secs) as u64;
+        if self.current_stats.last_bytes_received > 0 && total_bytes_received > self.current_stats.last_bytes_received && elapsed_secs > 0.0 {
+            let bytes_diff = total_bytes_received.saturating_sub(self.current_stats.last_bytes_received);
+            self.current_stats.bitrate_bps = ((bytes_diff * 8) as f64 / elapsed_secs) as u64;
         }
-        
-        if self.last_packets_received > 0 && total_packets_received > self.last_packets_received {
-            let packets_diff = total_packets_received.saturating_sub(self.last_packets_received);
-            let nack_diff = total_nack_count.saturating_sub(self.last_nack_count);
-            
+        if self.current_stats.last_packets_received > 0 && total_packets_received > self.current_stats.last_packets_received {
+            let packets_diff = total_packets_received.saturating_sub(self.current_stats.last_packets_received);
+            let nack_diff = total_nack_count.saturating_sub(self.current_stats.last_nack_count);
             if packets_diff > 0 {
-                // Защита: nack_diff может быть больше packets_diff при сильном спурте.
-                // Ограничиваем отношение сверху единицей (100%), чтобы не ломать логику.
                 let loss_ratio = (nack_diff as f64 / packets_diff as f64).min(1.0);
-                
-                // ВАЖНО: Так как NACK — это не чистые потери (часть пакетов восстанавливается), 
-                // мы делим полученный коэффициент на 2, чтобы получить более реалистичную оценку "потерь".
-                // Иначе из-за дублирующих NACK-ов алгоритм будет слишком агрессивно дропать качество.
-                self.packet_loss = (loss_ratio * 100.0) / 2.0;
+                self.current_stats.packet_loss = (loss_ratio * 100.0) / 2.0;
             }
-        } else if total_packets_received == self.last_packets_received && self.last_packets_received > 0 {
+        } else if total_packets_received == self.current_stats.last_packets_received && self.current_stats.last_packets_received > 0 {
             // Если пакеты вообще перестали приходить, считаем это 100% потерей связи
-            self.packet_loss = 100.0;
+            self.current_stats.packet_loss = 100.0;
         }
-        self.last_bytes_received = total_bytes_received;
-        self.last_packets_received = total_packets_received;
-        self.last_nack_count = total_nack_count;
+        self.current_stats.last_bytes_received = total_bytes_received;
+        self.current_stats.last_packets_received = total_packets_received;
+        self.current_stats.last_nack_count = total_nack_count;
     }
     fn get_quality(&self) -> Option<StreamQuality> {
-        if self.last_bytes_received == 0 {
+        if self.current_stats.bitrate_bps == 0 {
             return Some(StreamQuality::High);
         }
-        if self.packet_loss > 15.0 || self.bitrate_bps < 150_000 {
-            tracing::info!("{} {}", self.packet_loss, self.bitrate_bps);
+        if self.current_stats.packet_loss > self.thresholds.low_loss || self.current_stats.bitrate_bps < self.thresholds.low_bitrate {
             return Some(StreamQuality::Low);
         }
-        if self.packet_loss > 8.0 || self.bitrate_bps < 350_000 {
+        if self.current_stats.packet_loss > self.thresholds.mid_loss || self.current_stats.bitrate_bps < self.thresholds.mid_bitrate {
             return Some(StreamQuality::Mid);
         }
-        if self.bitrate_bps > 1_200_000 && self.packet_loss < 2.0 {
+        if self.current_stats.packet_loss < self.thresholds.high_loss && self.current_stats.bitrate_bps > self.thresholds.high_bitrate {
             return Some(StreamQuality::High);
         }
         None

@@ -77,29 +77,44 @@ export class PeerConnection {
         }
     }
     async add_stream(stream) {
+        const deviceType = getDeviceType();
+        const isMobile = deviceType === 'mobile';
+        
+        // Настройки битрейта в зависимости от устройства
+        const bitrateSettings = isMobile ? {
+            low: 75000,      // 80k вместо 150k
+            mid: 200_000,     // 250k вместо 500k  
+            high: 600_000     // 800k вместо 1800k (в 2.25 раза ниже)
+        } : {
+            low: 150000,
+            mid: 350_000,
+            high: 1_200_000
+        };
+        
+        const encodings = [
+            {
+                rid: 'low',
+                maxBitrate: bitrateSettings.low,
+                scaleResolutionDownBy: getRoundedResolution(BASE_HEIGHT, BASE_WIDTH, 4.0),
+                maxFramerate: 30,  // На телефонах меньше FPS
+            },
+            {
+                rid: 'mid',
+                maxBitrate: bitrateSettings.mid,
+                scaleResolutionDownBy: getRoundedResolution(BASE_HEIGHT, BASE_WIDTH, 2.0),
+                maxFramerate: 60,
+            },
+            {
+                rid: 'high',
+                maxBitrate: bitrateSettings.high,
+                scaleResolutionDownBy: 1.0,
+                maxFramerate: 60,
+            }
+        ];
         const videoTrack = stream.getVideoTracks()[0];
         this.publisher_pc.addTransceiver(videoTrack, {
             direction: 'sendonly',
-            sendEncodings: [
-                    {
-                    rid: 'low',
-                    maxBitrate: 150000,          // Подняли с 70k для четких 180p
-                    scaleResolutionDownBy: 8.0,  
-                    maxFramerate: 60,
-                },
-                {
-                    rid: 'mid',
-                    maxBitrate: 500000,          // Подняли с 250k для стабильных 360p
-                    scaleResolutionDownBy: 4.0,  //
-                    maxFramerate: 60,
-                },
-                {
-                    rid: 'high',
-                    maxBitrate: 1800000,         // Подняли с 1M. Для хорошего 720p30 нужно ~1.5-2.0 Mbps
-                    scaleResolutionDownBy: 1.0,  // 1280x720
-                    maxFramerate: 120,
-                }
-            ]
+            sendEncodings: encodings
         });
         const audioTrack = stream.getAudioTracks()[0];
         this.publisher_pc.addTransceiver(audioTrack, { direction: 'sendonly' });
@@ -116,4 +131,41 @@ export class PeerConnection {
             await this.publisher_pc.setRemoteDescription(new RTCSessionDescription(message));
         }
     }
+}
+
+const BASE_WIDTH = 1080;
+const BASE_HEIGHT = 1920;
+
+function getRoundedResolution(baseWidth, baseHeight, targetScale, alignment = 32) {
+    if (targetScale <= 1.0) {
+        // Для high слоя - никаких округлений
+        return 1.0;
+    }
+    
+    let targetWidth = baseWidth / targetScale;
+    let targetHeight = baseHeight / targetScale;
+    
+    let roundedWidth = Math.round(targetWidth / alignment) * alignment;
+    let roundedHeight = Math.round(targetHeight / alignment) * alignment;
+    
+    // Убеждаемся, что не увеличиваем разрешение
+    if (roundedWidth > baseWidth || roundedHeight > baseHeight) {
+        return targetScale; // Возвращаем исходный коэффициент
+    }
+    
+    let realScaleDown = baseWidth / roundedWidth;
+    
+    // Гарантия >= 1.0
+    return Math.max(1.0, realScaleDown);
+}
+
+export function getDeviceType() {
+    const ua = navigator.userAgent;
+    if (/(tablet|ipad|playbook|silk)|(android(?!.*mobi))/i.test(ua)) {
+        return 'tablet';
+    }
+    if (/Mobile|Android|iP(hone|od)|IEMobile|BlackBerry|Kindle|Silk-Accelerated|(hpw|web)OS|Opera M(obi|ini)/.test(ua)) {
+        return 'mobile';
+    }
+    return 'desktop';
 }
