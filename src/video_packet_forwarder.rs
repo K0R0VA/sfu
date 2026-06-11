@@ -51,6 +51,7 @@ impl From<(StreamQuality, Packet)> for VideoPacketForwarderMessage {
 impl VideoPacketForwarder {
     async fn forward(&mut self, ctx: &Ctx<'_, Self>, quality: StreamQuality, mut packet: Packet) -> Result<(), Error> {
         if self.is_layer_switching && self.current_quality != Some(quality) {
+            tracing::info!("is_layer_switching");
             self.handle_pending_packets(ctx, quality, &mut packet).await?;
             return Ok(());
         }
@@ -126,10 +127,6 @@ impl Actor for VideoPacketForwarder {
                 self.current_channel = Some(forwarder);
             }
             VideoPacketForwarderMessage::RtpPacket {packet, quality} => {
-                if self.current_quality != Some(quality) && !self.is_layer_switching { 
-                    tracing::info!("Old RtpPacket {}", packet.header.timestamp);
-                    return; 
-                }
                 if let Err(e) = self.forward(ctx, quality, packet).await {
                     tracing::error!("[VideoPacketForwarder] write_rtp {e}");
                     self.stop(ctx).await;

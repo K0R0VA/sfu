@@ -32,7 +32,7 @@ impl VideoSubscription {
             .sender()
             .await;
         let packet_forwarder = VideoPacketForwarder::new(track.clone(), mime_type)
-            .start_with_capacity(256);
+            .start_with_capacity(2048);
         connections.insert(quality, stream.clone());
         let this = Self { pc, peer_id, connections, active_track, active_quality: quality, packet_forwarder,   };
         Ok(this) 
@@ -81,8 +81,8 @@ impl Actor for VideoSubscription {
             let mut rtcp_buf = vec![0u8; 1500];
             while let Ok((packets, _)) = active_track.read(&mut rtcp_buf).await {
                 for packet in packets {
-                    // Если подписчик кричит, что потерял картинку (PLI)
                     if packet.as_any().downcast_ref::<PictureLossIndication>().is_some() {
+                        tracing::info!("🎯 Поймали одиночный PLI пакета подписчика!");
                         let _ = addr.send(ForcePli).await;
                     }
                 }

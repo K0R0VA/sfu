@@ -39,15 +39,15 @@ impl From<DeviceType> for QualityThresholds {
             DeviceType::Desktop => QualityThresholds {
                 low_bitrate: 150_000,
                 mid_bitrate: 350_000,
-                high_bitrate: 1_200_000,
+                high_bitrate: 700_00,
                 low_loss: 15.0,
                 mid_loss: 8.0,
                 high_loss: 2.0,
             },
             DeviceType::Mobile => QualityThresholds {
                 low_bitrate: 75_000,
-                mid_bitrate: 200_000,
-                high_bitrate: 600_000,
+                mid_bitrate: 150_000,
+                high_bitrate: 350_000,
                 low_loss: 15.0,
                 mid_loss: 8.0,
                 high_loss: 2.0,

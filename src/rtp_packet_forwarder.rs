@@ -1,16 +1,18 @@
-use std::{collections::HashSet, marker::PhantomData, sync::Arc};
+use std::{collections::HashSet, marker::PhantomData, sync::{Arc, atomic::AtomicUsize}};
 use webrtc::{rtp::packet::Packet, track::{track_remote::TrackRemote}};
-use crate::{actor::{Actor, Addr}, audio_packet_forwarder::AudioPacketForwarder, room::StreamQuality, video_packet_forwarder::VideoPacketForwarder};
+use crate::{actor::{Actor, Addr}, room::StreamQuality,};
 
 pub struct RtpPacketForwarder<A: Actor> {
     pub subscriptions: HashSet<Addr<A>>,
+    pub subscription_counter: Arc<AtomicUsize>,
     pub stream_quality: StreamQuality
 }
 
-impl RtpPacketForwarder<AudioPacketForwarder> {
-    pub fn spawn(track: Arc<TrackRemote>) -> Addr<Self> {
-        let this = Self {subscriptions: HashSet::new(), stream_quality: StreamQuality::Audio}
-            .start_with_capacity(32);
+impl<A: Actor> RtpPacketForwarder<A> where A::Message: From<(StreamQuality, Packet)>  {
+    pub fn spawn(track: Arc<TrackRemote>, stream_quality: StreamQuality) -> Addr<Self> {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let this: Addr<RtpPacketForwarder<A>> = Self {subscriptions: HashSet::new(), stream_quality,  subscription_counter: counter.clone()}
+            .start_with_capacity(2048);
         let receiver = this.clone();
         tokio::spawn(async move {
             loop {
@@ -19,26 +21,10 @@ impl RtpPacketForwarder<AudioPacketForwarder> {
                         receiver.terminate().await;
                         break;
                     };
+                if counter.load(std::sync::atomic::Ordering::Relaxed) == 0 { continue; };
                 let Ok(_) = receiver.do_send(RtpPacketForwarderMessage::RtpPacket(packet))
-                    .map_err(|_| tracing::error!("[RtpPacketForwarder] send tpPacketForwarderMessage::RtpPacket(packet)")) 
+                    .map_err(|_| tracing::error!("[RtpPacketForwarder] send RtpPacketForwarderMessage::RtpPacket(packet)")) 
                 else { break; };
-            }
-        });
-        this
-    }
-}
-
-impl RtpPacketForwarder<VideoPacketForwarder> {
-    pub fn spawn(track: Arc<TrackRemote>, stream_quality: StreamQuality) -> Addr<Self> {
-        let this = Self {subscriptions: HashSet::new(), stream_quality}
-            .start_with_capacity(32);
-        let receiver = this.clone();
-        tokio::spawn(async move {
-            loop {
-                let Ok((packet, _)) = track.read_rtp().await
-                    .map_err(|e| tracing::error!("[RtpPacketForwarder] read_rtp {e}")) else { break; };
-                let Ok(_) = receiver.do_send(RtpPacketForwarderMessage::RtpPacket(packet))
-                    .map_err(|_| tracing::error!("[RtpPacketForwarder] send tpPacketForwarderMessage::RtpPacket(packet)")) else { break; };
             }
         });
         this
@@ -63,12 +49,14 @@ impl<A: Actor> Actor for RtpPacketForwarder<A>
             RtpPacketForwarderMessage::Subscribe(sub) => { 
                 tracing::info!("[RtpPacketForwarder] Subscribe {:?}", PhantomData::<A>::default());
                 self.subscriptions.insert(sub);
+                self.subscription_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             },
             RtpPacketForwarderMessage::RtpPacket(packet) => {
                 self.subscriptions.iter().for_each(|sub|{ let _ = sub.do_send((self.stream_quality, packet.clone()).into()); });
             },
             RtpPacketForwarderMessage::Unsubscribe(sub) => {
                 self.subscriptions.remove(&sub);
+                self.subscription_counter.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
             }
         }
     }

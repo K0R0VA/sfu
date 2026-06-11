@@ -38,6 +38,7 @@ impl User {
         m.register_default_codecs()?;
         
     // Регистрируем этот кодек на прием и на отправку
+    
         let registry = register_default_interceptors(Registry::new(), &mut m)?;
         let mut system_engine = SettingEngine::default();
         system_engine
@@ -227,7 +228,7 @@ impl Actor for User {
                 tracing::info!("[SFU] {kind} от {peer_id} подключен");
                 let mesage = match kind {
                         RTPCodecType::Audio | RTPCodecType::Unspecified => { 
-                            let rtp_packet_forwarder= RtpPacketForwarder::<AudioPacketForwarder>::spawn(track);
+                            let rtp_packet_forwarder= RtpPacketForwarder::<AudioPacketForwarder>::spawn(track, StreamQuality::Audio);
                             let packet_subscription = PacketAudioSubscription { 
                                 rtp_packet_forwarder
                             };

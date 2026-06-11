@@ -33,7 +33,7 @@ impl Actor for PliSender {
     }
     async fn handle(&mut self, ctx: &mut crate::actor::Ctx<'_, Self>, _: Self::Message) {
         let elapsed = self.instant.elapsed();
-        if elapsed < Duration::from_secs(5) { 
+        if elapsed < Duration::from_secs(1) { 
             return;
         }
         tracing::info!("[PliSender] Send");

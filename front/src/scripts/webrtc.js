@@ -82,13 +82,13 @@ export class PeerConnection {
         
         // Настройки битрейта в зависимости от устройства
         const bitrateSettings = isMobile ? {
-            low: 75000,      // 80k вместо 150k
-            mid: 200_000,     // 250k вместо 500k  
-            high: 600_000     // 800k вместо 1800k (в 2.25 раза ниже)
+            low: 75_000,      
+            mid: 175_000,    
+            high: 350_000     
         } : {
-            low: 150000,
+            low: 150_000,
             mid: 350_000,
-            high: 1_200_000
+            high: 700_000
         };
         
         const encodings = [
@@ -96,19 +96,16 @@ export class PeerConnection {
                 rid: 'low',
                 maxBitrate: bitrateSettings.low,
                 scaleResolutionDownBy: getRoundedResolution(BASE_HEIGHT, BASE_WIDTH, 4.0),
-                maxFramerate: 30,  // На телефонах меньше FPS
             },
             {
                 rid: 'mid',
                 maxBitrate: bitrateSettings.mid,
                 scaleResolutionDownBy: getRoundedResolution(BASE_HEIGHT, BASE_WIDTH, 2.0),
-                maxFramerate: 60,
             },
             {
                 rid: 'high',
                 maxBitrate: bitrateSettings.high,
                 scaleResolutionDownBy: 1.0,
-                maxFramerate: 60,
             }
         ];
         const videoTrack = stream.getVideoTracks()[0];
