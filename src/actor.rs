@@ -117,6 +117,25 @@ impl<A: Actor> Addr<A> {
     }
 }
 
+pub struct WeakAddr<A: Actor> {
+    addr: Option<Addr<A>>
+}
+
+impl<A: Actor> Default for WeakAddr<A> {
+    fn default() -> Self {
+        Self { addr: None }
+    }
+}
+
+impl<A: Actor> WeakAddr<A> {
+    pub fn set_addr(&mut self, addr: Addr<A>) {
+        let _ = self.addr.insert(addr);
+    } 
+    pub fn strong(&self) -> &Addr<A> {
+        self.addr.as_ref().expect("set_addr not used")
+    }
+}
+
 pub enum StreamItem<T> {
     Next(T),
     Close

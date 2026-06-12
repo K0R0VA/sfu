@@ -52,7 +52,6 @@ impl<A: Actor> Actor for RtpPacketForwarder<A>
                 self.subscription_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             },
             RtpPacketForwarderMessage::RtpPacket(packet) => {
-                println!("{}", packet.payload.len());
                 self.subscriptions.iter().for_each(|sub|{ let _ = sub.do_send((self.stream_quality, packet.clone()).into()); });
             },
             RtpPacketForwarderMessage::Unsubscribe(sub) => {

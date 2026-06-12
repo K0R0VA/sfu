@@ -132,7 +132,7 @@ impl Actor for Room {
                 tracing::info!("❌ [RoomActor] Участник {} вышел из комнаты", peer_id);
                 self.peers.remove(&peer_id);
                 for (_, Peer { user, .. }) in self.peers.iter() {
-                    let _ = user.send(UserMessage::DisconnectFromUser { speaker_id: peer_id }).await;
+                    let _ = user.send(UserMessage::Unsubscribe { user_id: peer_id }).await;
                 }
             }
         }

@@ -20,6 +20,8 @@ pub mod audio_subscription;
 pub mod audio_packet_forwarder;
 pub mod pli_sender;
 pub mod rtp_packet_forwarder;
+pub mod subscriber_pc;
+pub mod publisher_pc;
 
 use axum::{
     routing::get,

@@ -63,7 +63,7 @@ impl Actor for AudioSubscription {
     }
     async fn handle(&mut self, _ctx: &mut crate::actor::Ctx<'_, Self>, m: Self::Message) {
         if let Close::StreamForwardFail = m {
-            let _ = self.user.send(UserMessage::DisconnectFromUser { speaker_id: self.speaker_id }).await;
+            let _ = self.user.send(UserMessage::Unsubscribe { user_id: self.speaker_id }).await;
         }
     }
     async fn stopping(self, _ctx: &crate::actor::Ctx<'_, Self>) {
