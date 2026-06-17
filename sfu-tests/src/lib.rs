@@ -3,7 +3,12 @@ use std::{collections::HashSet, fs::File, io::BufReader, str::FromStr, sync::Arc
 use sfu::{SyncChannel, create_peer, error::Error, user::{IceCandidate, SignalMessage}};
 use tokio::{sync::Mutex, time::interval};
 use uuid::Uuid;
-use webrtc::{ice_transport::ice_candidate::RTCIceCandidateInit, media::{Sample, io::ivf_reader::IVFReader}, peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription}, rtp_transceiver::{RTCRtpTransceiverInit, rtp_codec::RTCRtpCodecCapability, rtp_transceiver_direction::RTCRtpTransceiverDirection}, track::track_local::{track_local_static_sample::TrackLocalStaticSample}};
+use webrtc::{ice_transport::ice_candidate::RTCIceCandidateInit, 
+    media::{Sample, io::ivf_reader::IVFReader}, 
+    peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription}, 
+    rtp_transceiver::{RTCRtpTransceiverInit, rtp_codec::RTCRtpCodecCapability, rtp_transceiver_direction::RTCRtpTransceiverDirection}, 
+    track::track_local::track_local_static_sample::TrackLocalStaticSample
+};
 
 #[cfg(test)]
 mod connect_to_room;
@@ -14,7 +19,8 @@ pub struct TestClient {
     pub subscriber_pc: Arc<RTCPeerConnection>,
     pub sfu_tx: tokio::sync::mpsc::Sender<SignalMessage>,
     pub sfu_rx: tokio::sync::mpsc::Receiver<SignalMessage>,
-    pub connected_peers: Arc<Mutex<HashSet<Uuid>>>
+    pub connected_peers: Arc<Mutex<HashSet<Uuid>>>,
+    pub connected: bool,
 }
 
 impl TestClient {
@@ -27,7 +33,8 @@ impl TestClient {
             subscriber_pc,
             sfu_rx,
             sfu_tx,
-            connected_peers: Arc::new(Mutex::new(HashSet::new()))
+            connected_peers: Arc::new(Mutex::new(HashSet::new())),
+            connected: false,
         })
     }
     pub async fn setup(&self) -> Result<(), sfu::error::Error> {
@@ -74,10 +81,10 @@ impl TestClient {
         let connected_peers = Arc::clone(&self.connected_peers);
         self.subscriber_pc.on_track(Box::new(move |track, _, _| {
             let peer_id = track.stream_id();
-            let mut peers = connected_peers.blocking_lock();
-            peers.insert(Uuid::from_str(&peer_id).unwrap());
+            let peers = connected_peers.clone();
             println!("📥 [Тест] Успешно получен медиа-трек от SFU: {}", track.id());
-            Box::pin(async {
+            Box::pin(async move {
+                peers.lock().await.insert(Uuid::from_str(&peer_id).unwrap());
                 tokio::spawn(async move {
                     loop {
                         let _ = track.read_rtp().await?;
@@ -93,7 +100,10 @@ impl TestClient {
         while let Some(message) = self.sfu_rx.recv().await {
             match message {
                 SignalMessage::Welcome { peer_id } => {
-                    self.add_track(peer_id).await?;
+                    tracing::info!("Welcome");
+                    self.peer_id = Some(peer_id);
+                    self.add_track().await?;
+                    self.sfu_tx.send(SignalMessage::Connect { device_type: sfu::quality_monitor::DeviceType::Desktop }).await.unwrap();
                 }
                 SignalMessage::PeerLeft { peer_id }  => {
                     let mut peers = self.connected_peers.lock().await;
@@ -106,6 +116,7 @@ impl TestClient {
                     };
                     match message_type {
                         sfu::user::MessageType::Candidate { candidate: IceCandidate { candidate, sdp_mid, sdp_mline_index } } => {
+                            tracing::info!("Candidate");
                             pc.add_ice_candidate(RTCIceCandidateInit {
                                 candidate,
                                 sdp_mid,
@@ -114,10 +125,12 @@ impl TestClient {
                             }).await?;
                         }
                         sfu::user::MessageType::Answer { sdp } => {
+                            tracing::info!("Answer");
                             let description = RTCSessionDescription::answer(sdp)?;
                             self.publisher_pc.set_remote_description(description).await?;
                         }
                         sfu::user::MessageType::Offer { sdp } => {
+                            tracing::info!("Offer");
                             let description = RTCSessionDescription::offer(sdp)?;
                             self.subscriber_pc.set_remote_description(description).await?;
                             let answer = self.subscriber_pc.create_answer(None).await?;
@@ -129,6 +142,7 @@ impl TestClient {
                             self.sfu_tx.send(response).await.unwrap();
                         },
                         sfu::user::MessageType::IceRestart { sdp } => {
+                            tracing::info!("IceRestart");
                             let description = RTCSessionDescription::offer(sdp)?;
                             pc.set_remote_description(description).await?;
                             let answer = pc.create_answer(None).await?;
@@ -147,8 +161,7 @@ impl TestClient {
 
         Ok(())
     }
-    async fn add_track(&mut self, peer_id: Uuid) -> Result<(), Error> {
-        self.peer_id = Some(peer_id);
+    async fn add_track(&mut self) -> Result<(), Error> {
         let video_track: Arc<TrackLocalStaticSample> = Arc::new(TrackLocalStaticSample::new(
             RTCRtpCodecCapability {
                 mime_type: "video/VP8".to_string(),
@@ -185,7 +198,7 @@ impl TestClient {
             ((1000 * header.timebase_numerator) / header.timebase_denominator) as u64,
         );
         let mut ticker = interval(sleep_time);
-        tokio::task::spawn_blocking(|| async move {
+        tokio::task::spawn(async move {
             loop {
                 let frame = match reader.parse_next_frame() {
                     Ok((frame, _)) => frame,

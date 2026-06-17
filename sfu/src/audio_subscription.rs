@@ -1,9 +1,21 @@
-use std::sync::{Arc};
+use std::sync::Arc;
 
+use crate::{
+    PacketAudioSubscription, SyncChannel,
+    actor::{Actor, Addr},
+    audio_packet_forwarder::AudioPacketForwarder,
+    error::Error,
+    rtp_packet_forwarder::RtpPacketForwarderMessage,
+    user::{ConnectionRequest, User, UserMessage},
+};
 use uuid::Uuid;
-use webrtc::{peer_connection::RTCPeerConnection, rtp_transceiver::{RTCRtpTransceiverInit, rtp_codec::RTCRtpCodecCapability, rtp_sender::RTCRtpSender, rtp_transceiver_direction::RTCRtpTransceiverDirection}, track::track_local::track_local_static_rtp::TrackLocalStaticRTP};
-
-use crate::{PacketAudioSubscription, SyncChannel, actor::{Actor, Addr}, audio_packet_forwarder::AudioPacketForwarder, error::Error, rtp_packet_forwarder::RtpPacketForwarderMessage, user::{ConnectionRequest, User, UserMessage}};
+use webrtc::{
+    peer_connection::RTCPeerConnection,
+    rtp_transceiver::{
+        RTCRtpTransceiverInit, rtp_codec::RTCRtpCodecCapability, rtp_sender::RTCRtpSender, rtp_transceiver_direction::RTCRtpTransceiverDirection,
+    },
+    track::track_local::track_local_static_rtp::TrackLocalStaticRTP,
+};
 
 pub struct AudioSubscription<S: SyncChannel> {
     pc: Arc<RTCPeerConnection>,
@@ -15,12 +27,13 @@ pub struct AudioSubscription<S: SyncChannel> {
 }
 
 impl<S: SyncChannel> AudioSubscription<S> {
-    pub async fn init(
-        pc: Arc<RTCPeerConnection>, 
-        user: Addr<User<S>>,
-        request: ConnectionRequest<PacketAudioSubscription>
-    ) -> Result<Self, Error> {
-        let ConnectionRequest { codec_mime_type, speaker_id, stream: connection, .. } = request;
+    pub async fn init(pc: Arc<RTCPeerConnection>, user: Addr<User<S>>, request: ConnectionRequest<PacketAudioSubscription>) -> Result<Self, Error> {
+        let ConnectionRequest {
+            codec_mime_type,
+            speaker_id,
+            stream: connection,
+            ..
+        } = request;
         let output_track: Arc<TrackLocalStaticRTP> = Arc::new(TrackLocalStaticRTP::new(
             RTCRtpCodecCapability {
                 mime_type: codec_mime_type.to_string(),
@@ -29,31 +42,37 @@ impl<S: SyncChannel> AudioSubscription<S> {
             "audio".to_string(),
             speaker_id.to_string(),
         ));
-        let sender = pc.add_transceiver_from_track(
+        let sender = pc
+            .add_transceiver_from_track(
                 output_track.clone() as Arc<_>,
-                Some(RTCRtpTransceiverInit { direction: RTCRtpTransceiverDirection::Sendonly, send_encodings: vec![] })
+                Some(RTCRtpTransceiverInit {
+                    direction: RTCRtpTransceiverDirection::Sendonly,
+                    send_encodings: vec![],
+                }),
             )
             .await?
             .sender()
             .await;
-        let forwarder = AudioPacketForwarder { 
-            track: output_track.clone(), 
-        }.start_with_capacity(256);
-        let _ = connection.rtp_packet_forwarder.send(RtpPacketForwarderMessage::Subscribe(forwarder.clone())).await;
+        let forwarder = AudioPacketForwarder { track: output_track.clone() }
+            .start_with_capacity(256);
+        let _ = connection
+            .rtp_packet_forwarder
+            .send(RtpPacketForwarderMessage::Subscribe(forwarder.clone()))
+            .await;
         Ok(Self {
             sender,
             pc,
             speaker_id,
             user,
             connection,
-            forwarder
+            forwarder,
         })
     }
 }
 
 pub enum Close {
     UserDisconnect,
-    StreamForwardFail
+    StreamForwardFail,
 }
 
 impl<S: SyncChannel> Actor for AudioSubscription<S> {
@@ -67,7 +86,11 @@ impl<S: SyncChannel> Actor for AudioSubscription<S> {
         }
     }
     async fn stopping(self, _ctx: &crate::actor::Ctx<'_, Self>) {
-        let _ = self.connection.rtp_packet_forwarder.send(RtpPacketForwarderMessage::Unsubscribe(self.forwarder.clone())).await;
+        let _ = self
+            .connection
+            .rtp_packet_forwarder
+            .send(RtpPacketForwarderMessage::Unsubscribe(self.forwarder.clone()))
+            .await;
         self.forwarder.terminate().await;
         if let Err(e) = self.pc.remove_track(&self.sender).await {
             tracing::error!("[AudioSubscription] remove_track failed {e}");

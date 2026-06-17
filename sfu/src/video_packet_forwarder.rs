@@ -208,7 +208,6 @@ fn is_h264_key_frame(payload: &[u8]) -> bool {
         // FU header: второй байт
         let fu_header = payload[1];
         let start_bit = (fu_header & 0x80) != 0;
-        let end_bit = (fu_header & 0x40) != 0;
         let fu_type = fu_header & 0x1F;
         
         // Ключевой кадр - это IDR (type 5) и это начало фрагмента
@@ -251,12 +250,6 @@ fn is_vp9_key_frame(payload: &[u8]) -> bool {
     let mut offset = 0;
     let byte = payload[offset];
     
-    // Check if it's a key frame
-    // Profile + bit 6-7? Actually need to parse VP9 frame header
-    // Simplified: key frames have picture_id flag and specific pattern
-    let f = (byte >> 4) & 0x03; // F bit?
-    
-    // Skip payload descriptor
     offset += 1;
     
     // Check for extended descriptor

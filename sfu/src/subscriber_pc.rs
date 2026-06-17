@@ -73,7 +73,7 @@ impl<S: SyncChannel> Actor for Subscriber<S> {
                 }
             }
             SubscriberMessage::IceStateChange { state } => {
-                if let Err(e) = self.handle_ice_state_change(ctx, state).await {
+                if let Err(e) = self.handle_ice_state_change(state).await {
                     tracing::error!("[UserActor] UserMessage::Signal {e}");
                 }
             }
@@ -97,7 +97,7 @@ impl<S: SyncChannel> Actor for Subscriber<S> {
                 let _ = self.user.send(UserMessage::SignalMessage(message)).await;
             }
             SubscriberMessage::Websocket (message)=> {
-                if let Err(e) = self.handle_ws_message(ctx, message).await {
+                if let Err(e) = self.handle_ws_message(message).await {
                     tracing::error!("👤 [UserActor] UserMessage::Websocket {:?}", e);
                     self.stop(ctx).await;
                 }
@@ -170,7 +170,7 @@ impl<S: SyncChannel> Actor for Subscriber<S> {
 }
 
 impl<S: SyncChannel> Subscriber<S> {
-    async fn handle_ice_state_change(&mut self, ctx: &mut Ctx<'_, Self>, state: RTCIceConnectionState) -> Result<(), Error> {
+    async fn handle_ice_state_change(&mut self, state: RTCIceConnectionState) -> Result<(), Error> {
         match state {
             RTCIceConnectionState::Disconnected | RTCIceConnectionState::Failed => {
                 tracing::warn!("[Subscriber] IceStateChange");
@@ -188,7 +188,7 @@ impl<S: SyncChannel> Subscriber<S> {
         Ok(())
     }
     
-    async fn handle_ws_message(&mut self, ctx: &mut Ctx<'_, Self>, message: MessageType) -> Result<(), Error> {
+    async fn handle_ws_message(&mut self, message: MessageType) -> Result<(), Error> {
         match message {
             MessageType::Answer { sdp } => {
                 let answer_desc = RTCSessionDescription::answer(sdp)?;

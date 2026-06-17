@@ -95,12 +95,12 @@ impl<S: SyncChannel> Actor for Publisher<S> {
                     }, 
                 }).await;
             }
-            PublisherMessage::NewAudioTrack(track) =>  {
+            PublisherMessage::NewAudioTrack(_track) =>  {
                 todo!("implement NewAudioTrack resubscribe")
             }
             PublisherMessage::NewVideoTrack {quality, track} => {
                 match self.video_tracks.entry(quality) {
-                    std::collections::hash_map::Entry::Occupied(o) => {
+                    std::collections::hash_map::Entry::Occupied( _o) => {
                         todo!("implement NewAudioTrack resubscribe");
                     },
                     std::collections::hash_map::Entry::Vacant(v) => {
@@ -167,6 +167,7 @@ impl<S: SyncChannel> Actor for Publisher<S> {
         let addr = ctx.addr.clone();
         let pc = self.pc.clone();
         self.pc.on_track(Box::new(move |track, _, _| {
+            tracing::info!("Receive new track");
             let pc = pc.clone();
             let addr = addr.clone();
             let ssrc = track.ssrc();
@@ -234,6 +235,7 @@ impl<S: SyncChannel> Publisher<S> {
     async fn handle_ws_message(&mut self, message: MessageType) -> Result<(), Error> {
         match message {
             MessageType::Offer {sdp} => {
+                tracing::info!("[Publisher] Offer");
                 let offer_desc = RTCSessionDescription::offer(sdp)?;
                 self.pc.set_remote_description(offer_desc).await?;
                 let answer = self.pc.create_answer(None).await?;
