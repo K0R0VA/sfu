@@ -25,6 +25,7 @@ export class PeerConnection {
         publisher_pc.onicecandidate = (event) => {
             if (event.candidate && event.candidate.candidate) {
                 this.ws.send(JSON.stringify({
+                    kind: "rtc",
                     target: "publisher",
                     type: "candidate",
                     candidate: event.candidate.candidate,
@@ -35,6 +36,7 @@ export class PeerConnection {
         subscriber_pc.onicecandidate = (event) => {
             if (event.candidate && event.candidate.candidate) {
                 this.ws.send(JSON.stringify({
+                    kind: "rtc",
                     target: "subscriber",
                     type: "candidate",
                     candidate: event.candidate.candidate,
@@ -60,7 +62,6 @@ export class PeerConnection {
     }
     async create_answer_task(sdp) {
         try {
-            console.log('new offer');
             await this.subscriber_pc.setRemoteDescription(new RTCSessionDescription({
                 type: 'offer',
                 sdp: sdp
@@ -68,6 +69,7 @@ export class PeerConnection {
             const answer = await this.subscriber_pc.createAnswer();
             await this.subscriber_pc.setLocalDescription(answer);
             this.ws.send(JSON.stringify({
+                kind: "rtc",
                 target: 'subscriber',
                 type: 'answer',
                 sdp: answer.sdp
@@ -76,7 +78,23 @@ export class PeerConnection {
             console.error("Ошибка при обработке SFU Offer:", error);
         }
     }
-    async add_stream(stream) {
+    async restart_ice(target) {
+        await this[`${target}_pc`].setRemoteDescription(new RTCSessionDescription({
+            kind: "rtc",
+            type: 'offer',
+            sdp: msg.sdp
+        }));
+        
+        const answer = await this[`${target}_pc`].createAnswer();
+        await this[`${target}_pc`].setLocalDescription(answer);
+        this.ws.send(JSON.stringify({
+            kind: "rtc",
+            type: 'answer',
+            target,
+            sdp: answer.sdp
+        }));
+    }
+    async add_tracks(stream) {
         const deviceType = getDeviceType();
         const isMobile = deviceType === 'mobile';
         
@@ -118,6 +136,7 @@ export class PeerConnection {
         let offer = await this.publisher_pc.createOffer();
         await this.publisher_pc.setLocalDescription(offer);
         this.ws.send(JSON.stringify({
+            kind: "rtc",
             target: "publisher",
             type: "offer",
             sdp: offer.sdp

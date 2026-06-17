@@ -1,20 +1,27 @@
 use std::{collections::HashMap, fmt::{Display}, str::FromStr};
 use uuid::Uuid;
 
-use crate::{PacketAudioSubscription, PacketVideoSubscription, actor::{Actor, Addr, Ctx}, error::Error, pli_sender::Ping, user::{ConnectionRequest, User, UserMessage}};
+use crate::{PacketAudioSubscription, PacketVideoSubscription, SyncChannel, actor::{Actor, Addr, Ctx}, error::Error, pli_sender::Ping, user::{ConnectionRequest, User, UserMessage}};
 
-#[derive(Default)]
-pub struct Room {
-    peers: HashMap<Uuid, Peer>
+pub struct Room<S: SyncChannel> {
+    peers: HashMap<Uuid, Peer<S>>
 }
 
-pub struct Peer {
-    pub user: Addr<User>,
+impl<S: SyncChannel> Default for Room<S> {
+    fn default() -> Self {
+        Self {
+            peers: HashMap::new()
+        }
+    }
+}
+
+pub struct Peer<S: SyncChannel> {
+    pub user: Addr<User<S>>,
     pub video_streams: HashMap<StreamQuality, PeerStream<PacketVideoSubscription>>,
     pub audio_stream: Option<PeerStream<PacketAudioSubscription>>
 }
 
-impl Peer {
+impl<S: SyncChannel> Peer<S> {
     fn add_audio_track(&mut self, stream: PeerStream<PacketAudioSubscription>) {
         self.audio_stream = Some(stream);
     }
@@ -86,11 +93,11 @@ impl FromStr for StreamQuality {
 }
 
 
-pub enum RoomMessage {
+pub enum RoomMessage<S: SyncChannel> {
     SubscribeToPeers { peer_id: Uuid },
     Join {
         peer_id: Uuid,
-        addr: Addr<User>,
+        addr: Addr<User<S>>,
     },
     AddAudioTrack {
         peer_id: Uuid,
@@ -108,8 +115,8 @@ pub enum RoomMessage {
 }
 
 
-impl Actor for Room {
-    type Message = RoomMessage;
+impl<S: SyncChannel> Actor for Room<S> {
+    type Message = RoomMessage<S>;
     async fn handle(&mut self, _ctx: &mut Ctx<'_, Self>, msg: Self::Message) {
         match msg {
             RoomMessage::Join { peer_id, addr } => {
@@ -124,6 +131,7 @@ impl Actor for Room {
                 peer.add_audio_track(stream);
             },
             RoomMessage::AddVideoTrack { peer_id, mut stream, quality } => {
+                tracing::info!("[RoomActor] AddVideoTrack");
                 self.connect_new_video_stream(peer_id, quality, &mut stream).await;
                 let peer = self.peers.get_mut(&peer_id).unwrap();
                 peer.add_stream_track(quality, stream);
@@ -148,7 +156,7 @@ impl Actor for Room {
     }
 }
 
-impl Room {
+impl<S: SyncChannel> Room<S> {
     async fn connect_new_audio_stream(&mut self, peer_id: Uuid, stream: &mut PeerStream<PacketAudioSubscription>) {
         let peers = self.peers.iter()
             .filter(|(id, _)| **id != peer_id);
@@ -201,7 +209,7 @@ impl Room {
             }
         }
     }
-    fn add_peer(&mut self, peer_id: Uuid, user: Addr<User>) {
+    fn add_peer(&mut self, peer_id: Uuid, user: Addr<User<S>>) {
         self.peers.insert(peer_id, Peer { user, video_streams: HashMap::with_capacity(3), audio_stream: None });
     }
 }

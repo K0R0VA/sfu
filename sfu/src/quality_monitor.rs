@@ -4,11 +4,11 @@ use serde::{Deserialize, Serialize};
 use tokio::time::{interval};
 use webrtc::{peer_connection::RTCPeerConnection, stats::StatsReportType};
 
-use crate::{actor::{Actor, Addr, StreamItem}, room::StreamQuality, user::{User, UserMessage}};
+use crate::{SyncChannel, actor::{Actor, Addr, StreamItem}, room::StreamQuality, user::{User, UserMessage}};
 
-pub struct QualityMonitor {
+pub struct QualityMonitor<S: SyncChannel> {
     pc: Arc<RTCPeerConnection>,
-    user: Addr<User>,
+    user: Addr<User<S>>,
     last_stats_time: Instant,
     consecutive_high_signals: usize, 
     current_quality: Option<StreamQuality>, 
@@ -69,7 +69,7 @@ pub enum QualityMonitorMessage {
     Close
 }
 
-impl Actor for QualityMonitor {
+impl<S: SyncChannel> Actor for QualityMonitor<S> {
     type Message = QualityMonitorMessage;
     async fn handle(&mut self, ctx: &mut crate::actor::Ctx<'_, Self>, m: Self::Message) {
         match m {
@@ -129,8 +129,8 @@ impl Actor for QualityMonitor {
     }
 }
 
-impl QualityMonitor {
-    pub fn new(pc: Arc<RTCPeerConnection>, user: Addr<User>, thresholds: QualityThresholds) -> Self {
+impl<S: SyncChannel> QualityMonitor<S> {
+    pub fn new(pc: Arc<RTCPeerConnection>, user: Addr<User<S>>, thresholds: QualityThresholds) -> Self {
         Self {
             pc,
             user,

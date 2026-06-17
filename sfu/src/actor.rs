@@ -107,7 +107,11 @@ impl<A: Actor> Addr<A> {
         tokio::spawn(async move {
             while let Some(item) = stream.next().await {
                 // Превращаем элемент стрима в сообщение актора и отправляем
-                let StreamItem::Next(msg) = mapper(item) else { break; };
+                let msg = match mapper(item) {
+                    StreamItem::Next(msg) => msg,
+                    StreamItem::Skip => continue,
+                    StreamItem::Close => break,
+                };
                 if addr.send(msg).await.is_err() {
                     break; // Актор умер, выходим из цикла
                 }
@@ -138,6 +142,7 @@ impl<A: Actor> WeakAddr<A> {
 
 pub enum StreamItem<T> {
     Next(T),
+    Skip,
     Close
 }
 

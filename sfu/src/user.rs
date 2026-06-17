@@ -1,25 +1,23 @@
-use axum::extract::ws::{Message, WebSocket};
-use futures_util::{SinkExt, stream::{SplitSink}};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use webrtc::{ice_transport::{ice_connection_state::RTCIceConnectionState}, peer_connection::{RTCPeerConnection, offer_answer_options::RTCOfferOptions, }, };
-use crate::{PacketAudioSubscription, PacketVideoSubscription, actor::{Actor, Addr, Ctx, WeakAddr},error::Error, pli_sender::PliSender, publisher_pc::{Publisher, PublisherMessage}, quality_monitor::{DeviceType, QualityMonitor, QualityThresholds}, room::{MimeType, Room, RoomMessage, StreamQuality}, subscriber_pc::{Subscriber, SubscriberMessage}};
+use webrtc::{peer_connection::{RTCPeerConnection, offer_answer_options::RTCOfferOptions, }, };
+use crate::{PacketAudioSubscription, PacketVideoSubscription, SyncChannel, actor::{Actor, Addr, Ctx, WeakAddr}, error::Error, publisher_pc::{Publisher, PublisherMessage}, quality_monitor::DeviceType, room::{MimeType, Room, RoomMessage, StreamQuality}, subscriber_pc::{Subscriber, SubscriberMessage}};
 
-pub struct User {
-    pub room: Addr<Room>,
+pub struct User<S: SyncChannel> {
+    pub room: Addr<Room<S>>,
     pub peer_id: Uuid,
-    pub ws_tx: SplitSink<WebSocket, Message>,
-    pub publisher: WeakAddr<Publisher>,
-    pub subscriber: WeakAddr<Subscriber>,
+    pub sync_channel: S,
+    pub publisher: WeakAddr<Publisher<S>>,
+    pub subscriber: WeakAddr<Subscriber<S>>,
 }
 
-impl User {
-    pub async fn new(ws_tx: SplitSink<WebSocket, Message>, room: Addr<Room>) -> Result<Self, Error> {
+impl<S: SyncChannel> User<S> {
+    pub async fn new(sync_channel: S, room: Addr<Room<S>>) -> Result<Self, Error> {
         let peer_id = Uuid::new_v4();
         Ok(Self {
             peer_id,
             room,
-            ws_tx,
+            sync_channel,
             publisher: WeakAddr::default(),
             subscriber: WeakAddr::default(),
         })
@@ -29,15 +27,19 @@ impl User {
 pub enum UserMessage {
     SignalMessage(SignalMessage),
     SwitchQualityLayer { quality: StreamQuality },
-    Websocket {
-        message: Result<Message, Error>
-    },
+    SyncMessage(SyncMessage),
     ConnectAudio(ConnectionRequest<PacketAudioSubscription>),
     ConnectVideo { request: ConnectionRequest<PacketVideoSubscription>, quality: StreamQuality },
     Unsubscribe {
         user_id: Uuid,
     },
     RoomClosed
+}
+
+pub enum SyncMessage {
+    Message(SignalMessage),
+    Close,
+    Error(String)
 }
 
 pub struct ConnectionRequest<T> {
@@ -52,7 +54,7 @@ pub enum ConnectionRequestKind {
     Video { stream_quality: StreamQuality }
 }
 
-impl Actor for User {
+impl<S: SyncChannel> Actor for User<S> {
     type Message = UserMessage;
     async fn handle(&mut self, ctx: &mut Ctx<'_, Self>, msg: Self::Message) {
         match msg {
@@ -65,7 +67,7 @@ impl Actor for User {
             UserMessage::SwitchQualityLayer { quality } => {
                 let _ = self.subscriber.strong().send(SubscriberMessage::SwitchQualityLayer { quality }).await;
             }
-            UserMessage::Websocket { message } => {
+            UserMessage::SyncMessage(message) => {
                 if let Err(e) = self.handle_ws_message(ctx, message).await {
                     tracing::error!("👤 [UserActor] UserMessage::Websocket {:?}", e);
                     self.stop(ctx).await;
@@ -102,14 +104,23 @@ impl Actor for User {
 }
 
 #[derive(Deserialize, Serialize, Debug)]
-#[serde(untagged, rename_all = "snake_case")] 
+#[serde(tag = "kind", rename_all = "snake_case")] 
 pub enum SignalMessage {
     Rtc {
         target: Target,
         #[serde(flatten)] 
         message_type: MessageType,
     },
-    DeviceType { device_type: DeviceType }
+    Welcome { peer_id: Uuid, },
+    PeerLeft { peer_id: Uuid },
+    Connect { device_type: DeviceType },
+}
+
+impl From<SignalMessage> for String {
+    fn from(value: SignalMessage) -> Self {
+        let str = serde_json::json!(value);
+        str.to_string()
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -139,7 +150,7 @@ pub enum Target {
     Subscriber
 }
 
-impl User {
+impl<S: SyncChannel> User<S> {
     async fn initiate(&mut self, ctx: &Ctx<'_, Self>) -> Result<(), Error> {
         self.send_welcome().await?;
         let addr = ctx.addr.clone();
@@ -150,40 +161,20 @@ impl User {
         Ok(())
     }
     async fn send_welcome(&mut self) -> Result<(), Error> {
-        let welcome_payload = serde_json::json!({
-            "type": "welcome",
-            "assigned_peer_id": self.peer_id
-        });
-        self.ws_tx.send(serde_json::to_string(&welcome_payload)?.into()).await?;
+        self.sync_channel.send(SignalMessage::Welcome { peer_id: self.peer_id }.into()).await?;
         Ok(())
     }
-    async fn handle_ice_state_change(&mut self, ctx: &mut Ctx<'_, Self>, state: RTCIceConnectionState, target: Target) -> Result<(), Error> {
-        match (state, target) {
-            (RTCIceConnectionState::Failed, target) => {
-                // self.initiate_ice_restart(target).await?;
-            },
-            (RTCIceConnectionState::Disconnected, Target::Publisher) => {
-            },
-            (RTCIceConnectionState::Disconnected, Target::Subscriber) => {},
-            (RTCIceConnectionState::Connected, Target::Publisher) => {},
-            (RTCIceConnectionState::Connected, Target::Subscriber) => {},
-            _ => {}
-        }
-        Ok(())
-    }
-    
-    async fn handle_ws_message(&mut self, ctx: &mut Ctx<'_, Self>, message: Result<Message, Error>) -> Result<(), Error> {
-        let text = match message? {
-            Message::Close(_) => {
+    async fn handle_ws_message(&mut self, ctx: &mut Ctx<'_, Self>, message: SyncMessage) -> Result<(), Error> {
+        let message = match message {
+            SyncMessage::Close => {
                 self.stop(ctx).await;
                 return Ok(());
             },
-            Message::Text(text) => text,
-            _ => return Ok(())
+            SyncMessage::Message(text) => text,
+            SyncMessage::Error(e) => return Err(Error::SystemError { message: e.into() })
         };
-        let message: SignalMessage = serde_json::from_str(&text)?;
         match message {
-            SignalMessage::DeviceType { device_type } => {
+            SignalMessage::Connect { device_type } => {
                 let _ = self.publisher.strong().send(PublisherMessage::InitiateMonitoring { device_type }).await;
             },
             SignalMessage::Rtc { target, message_type } => {
@@ -195,33 +186,28 @@ impl User {
                         let _ = self.subscriber.strong().send(SubscriberMessage::Websocket(message_type)).await;
                     }
                 }
-            }
+            },
+            _ => {}
         }
         Ok(())
     }
     async fn send_ws_message(&mut self, msg: SignalMessage) -> Result<(), Error> {
-        let signaling_message = serde_json::to_string(&msg)?;
-        self.ws_tx.send(Message::Text(signaling_message.into())).await?;
+        self.sync_channel.send(msg.into()).await?;
         Ok(())
     }
     async fn unsubscribe(&mut self, speaker_id: Uuid) -> Result<(), Error> {
         let _ = self.subscriber.strong().send(SubscriberMessage::Unsubscribe { from: speaker_id }).await;
-        let notice = serde_json::json!({
-            "type": "peer_left",
-            "peer_id": speaker_id
-        });
-        self.ws_tx.send(Message::Text(notice.to_string().into())).await?;
+        self.sync_channel.send(SignalMessage::PeerLeft { peer_id: self.peer_id }.into()).await?;
         Ok(())
     }
 }
 
-async fn initiate_ice_restart(
+pub async fn initiate_ice_restart(
     pc: &RTCPeerConnection,
     target: Target,
 ) -> Result<SignalMessage, Error> {
     let mut options = RTCOfferOptions::default();
     options.ice_restart = true;
-
     let offer = pc.create_offer(Some(options)).await?;
     pc.set_local_description(offer.clone()).await?;
     let message = SignalMessage::Rtc {

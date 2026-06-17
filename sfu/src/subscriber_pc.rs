@@ -1,79 +1,39 @@
 use std::{collections::HashMap, sync::{Arc}};
 use uuid::Uuid;
-use webrtc::{api::{APIBuilder, interceptor_registry::register_default_interceptors, media_engine::MediaEngine, setting_engine::SettingEngine}, ice_transport::{ice_candidate::RTCIceCandidateInit, ice_connection_state::RTCIceConnectionState, ice_server::RTCIceServer}, interceptor::registry::Registry, peer_connection::{RTCPeerConnection, configuration::RTCConfiguration, sdp::session_description::RTCSessionDescription, signaling_state::RTCSignalingState}, rtp_transceiver::rtp_codec::{RTCRtpHeaderExtensionCapability, RTPCodecType}};
-use crate::{PacketAudioSubscription, PacketVideoSubscription, actor::{Actor, Addr, Ctx}, audio_subscription::AudioSubscription, error::Error, quality_monitor::{QualityMonitor}, room::{StreamQuality}, user::{ConnectionRequest, IceCandidate, MessageType, SignalMessage, Target, User, UserMessage}, video_subscription::{VideoSubscription, VideoSubscriptionMessage}};
+use webrtc::{ice_transport::{ice_candidate::RTCIceCandidateInit, ice_connection_state::RTCIceConnectionState}, peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription, signaling_state::RTCSignalingState}};
+use crate::{PacketAudioSubscription, PacketVideoSubscription, SyncChannel, actor::{Actor, Addr, Ctx}, audio_subscription::AudioSubscription, create_peer, error::Error, quality_monitor::QualityMonitor, room::StreamQuality, user::{ConnectionRequest, IceCandidate, MessageType, SignalMessage, Target, User, UserMessage, initiate_ice_restart}, video_subscription::{VideoSubscription, VideoSubscriptionMessage}};
 
-pub struct Subscriber {
-    pub user: Addr<User>,
+pub struct Subscriber<S: SyncChannel> {
+    pub user: Addr<User<S>>,
     pub pc: Arc<RTCPeerConnection>,
-    pub audio_subscriptions: HashMap<Uuid, Addr<AudioSubscription>>,
+    pub audio_subscriptions: HashMap<Uuid, Addr<AudioSubscription<S>>>,
     pub video_subscriptions: HashMap<Uuid, Addr<VideoSubscription>>,
-    pub qualify_monitor: Option<Addr<QualityMonitor>>
+    pub qualify_monitor: Option<Addr<QualityMonitor<S>>>,
+    pub disconnected: bool,
+    pub retry_connect_attempts: u8,
 }
 
 const TARGET: Target = Target::Subscriber;
 
-impl Subscriber {
-    pub async fn new(user: Addr<User>) -> Result<Self, Error> {
-        let mut m = MediaEngine::default();
-        for uri in [
-            "urn:ietf:params:rtp-hdrext:sdes:mid",
-            "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id",
-            "urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id",
-        ] {
-            m.register_header_extension(
-                RTCRtpHeaderExtensionCapability {
-                    uri: uri.to_owned(),
-                },
-                    RTPCodecType::Video,
-                None,
-            )?;
-        }
-
-        m.register_default_codecs()?;
-        
-    // Регистрируем этот кодек на прием и на отправку
-    
-        let registry = register_default_interceptors(Registry::new(), &mut m)?;
-        let mut system_engine = SettingEngine::default();
-        system_engine
-            .set_interface_filter(
-                Box::new(|iface|{
-                    !iface.starts_with("docker") && !iface.starts_with("br-") && !iface.starts_with("veth")
-                })
-            );
-        // Настраиваем API WebRTC
-        let api = APIBuilder::new()
-            .with_media_engine(m)
-            .with_interceptor_registry(registry)
-            .with_setting_engine(system_engine)
-            .build();
-        // 2. STUN/TURN Сервера (Проблемное место #1: NAT Traversal)
-        let config = RTCConfiguration {
-            ice_servers: vec![
-                RTCIceServer {
-                    urls: vec![
-                        "stun:stun.l.google.com:19302".to_string(),
-                    ],
-                    ..Default::default()
-                }
-            ],
-            ..Default::default()
-        };
-        // 3. Создаем PeerConnection
-        let pc = Arc::new(api.new_peer_connection(config.clone()).await?);
+impl<S: SyncChannel> Subscriber<S> {
+    pub async fn new(user: Addr<User<S>>) -> Result<Self, Error> {
+        let pc = create_peer().await?;
+        let pc = Arc::new(pc);
         Ok(Self {
             user,
             pc,
             audio_subscriptions: HashMap::new(),
             video_subscriptions: HashMap::new(),
-            qualify_monitor: None
+            qualify_monitor: None,
+            disconnected: false,
+            retry_connect_attempts: 0
         })
     }
 }
 
 pub enum SubscriberMessage {
     SwitchQualityLayer { quality: StreamQuality },
+    CheckIceState,
     Signal {
         offer: String
     },
@@ -89,14 +49,33 @@ pub enum SubscriberMessage {
     Unsubscribe { from: Uuid }
 }
 
-impl Actor for Subscriber {
+impl<S: SyncChannel> Actor for Subscriber<S> {
     type Message = SubscriberMessage;
     async fn handle(&mut self, ctx: &mut Ctx<'_, Self>, msg: Self::Message) {
         match msg {
+            SubscriberMessage::CheckIceState => {
+                let current_state = self.pc.ice_connection_state();
+                let is_disconnected = [
+                        RTCIceConnectionState::Failed, 
+                        RTCIceConnectionState::Disconnected
+                    ]
+                    .iter()
+                    .any(|failed_state| *failed_state == current_state);
+                if is_disconnected {
+                    if self.retry_connect_attempts < 3 {
+                        let addr = ctx.addr.clone();
+                        tokio::spawn(async move {
+                            let _ = addr.send(SubscriberMessage::CheckIceState).await;
+                        });
+                    } else {
+                        self.stop(ctx).await;
+                    }
+                }
+            }
             SubscriberMessage::IceStateChange { state } => {
-                // if let Err(e) = self.handle_ice_state_change(state, target).await {
-                //     tracing::error!("[UserActor] UserMessage::Signal {e}");
-                // }
+                if let Err(e) = self.handle_ice_state_change(ctx, state).await {
+                    tracing::error!("[UserActor] UserMessage::Signal {e}");
+                }
             }
             SubscriberMessage::SwitchQualityLayer { quality } => {
                 for subscription in self.video_subscriptions.values() {
@@ -178,7 +157,6 @@ impl Actor for Subscriber {
                 }
             })
         }));
-        tracing::info!("🟢 [Userctor] Пользователь инициализирован.");
     }
     async fn stopping(self, _: &Ctx<'_, Self>) {
         for sub in self.audio_subscriptions.values() {
@@ -191,21 +169,25 @@ impl Actor for Subscriber {
     }
 }
 
-impl Subscriber {
-    async fn handle_ice_state_change(&mut self, ctx: &mut Ctx<'_, Self>, state: RTCIceConnectionState, target: Target) -> Result<(), Error> {
-        match (state, target) {
-            (RTCIceConnectionState::Failed, target) => {
-                // self.initiate_ice_restart(target).await?;
+impl<S: SyncChannel> Subscriber<S> {
+    async fn handle_ice_state_change(&mut self, ctx: &mut Ctx<'_, Self>, state: RTCIceConnectionState) -> Result<(), Error> {
+        match state {
+            RTCIceConnectionState::Disconnected | RTCIceConnectionState::Failed => {
+                tracing::warn!("[Subscriber] IceStateChange");
+                self.disconnected = true;
+                let message = initiate_ice_restart(&self.pc, Target::Subscriber).await?;
+                let _ = self.user.send(UserMessage::SignalMessage(message)).await;
+                self.retry_connect_attempts += 1;
             },
-            (RTCIceConnectionState::Disconnected, Target::Publisher) => {
+            RTCIceConnectionState::Connected if self.disconnected => {
+                self.disconnected = false;
+                self.retry_connect_attempts = 0;
             },
-            (RTCIceConnectionState::Disconnected, Target::Subscriber) => {},
-            (RTCIceConnectionState::Connected, Target::Publisher) => {},
-            (RTCIceConnectionState::Connected, Target::Subscriber) => {},
             _ => {}
         }
         Ok(())
     }
+    
     async fn handle_ws_message(&mut self, ctx: &mut Ctx<'_, Self>, message: MessageType) -> Result<(), Error> {
         match message {
             MessageType::Answer { sdp } => {
@@ -265,11 +247,6 @@ impl Subscriber {
             .remove(&speaker_id)
             .ok_or(Error::SystemError { message: "subscription not found".into() })?;
         video_subscription.terminate().await;
-        // let notice = serde_json::json!({
-        //     "type": "peer_left",
-        //     "peer_id": speaker_id
-        // });
-        // self.ws_tx.send(Message::Text(notice.to_string().into())).await?;
         Ok(())
     }
 }

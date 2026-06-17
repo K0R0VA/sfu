@@ -1,9 +1,12 @@
-[package]
-name = "webrtc-template"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+resolver = "3"
+members = [
+    "api-gateway",
+    "sfu", 
+    "sfu-tests"
+]
 
-[dependencies]
+[workspace.dependencies]
 webrtc = "0.17" # Основной крейт WebRTC для Rust
 tokio = { version = "1.0", features = ["full"] } # Асинхронный рантайм
 serde = { version = "1.0", features = ["derive"] }
@@ -13,6 +16,4 @@ tracing = "0.1"
 tracing-subscriber = {version = "0.3", features = ["env-filter"]}
 thiserror = "2"
 tokio-stream = { version = "0.1", features = ["sync"]}
-axum = {version = "0.8", features = ["ws"]}
-tower-http = { version = "0.6", features = ["fs"] }
 uuid = { version = "1", features = ["serde"]}

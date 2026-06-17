@@ -13,6 +13,7 @@
         :users="users"
         @set-video-src="setVideoSrc"
       />
+      <div>{{}}</div>
     </main>
   </div>
 </template>
@@ -23,9 +24,11 @@ import AppHeader from './components/app_header.vue';
 import VideoGrid from './components/video_grid.vue';
 import { connect_websocket, setVideoSrc } from './scripts/index.js';
 
+
 const roomStatus = ref("Готов к подключению");
 const isJoined = ref(false);
 const isConnecting = ref(false);
+const error = ref('');
 const users_map = ref(new Map());
 const users = computed(() => {
   return Array.from(users_map.value.entries()).map(([id, data]) => ({

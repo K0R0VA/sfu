@@ -3,21 +3,21 @@ use std::sync::{Arc};
 use uuid::Uuid;
 use webrtc::{peer_connection::RTCPeerConnection, rtp_transceiver::{RTCRtpTransceiverInit, rtp_codec::RTCRtpCodecCapability, rtp_sender::RTCRtpSender, rtp_transceiver_direction::RTCRtpTransceiverDirection}, track::track_local::track_local_static_rtp::TrackLocalStaticRTP};
 
-use crate::{PacketAudioSubscription, actor::{Actor, Addr}, audio_packet_forwarder::AudioPacketForwarder, error::Error, rtp_packet_forwarder::RtpPacketForwarderMessage, user::{ConnectionRequest, User, UserMessage}};
+use crate::{PacketAudioSubscription, SyncChannel, actor::{Actor, Addr}, audio_packet_forwarder::AudioPacketForwarder, error::Error, rtp_packet_forwarder::RtpPacketForwarderMessage, user::{ConnectionRequest, User, UserMessage}};
 
-pub struct AudioSubscription {
+pub struct AudioSubscription<S: SyncChannel> {
     pc: Arc<RTCPeerConnection>,
     speaker_id: Uuid,
-    user: Addr<User>,
+    user: Addr<User<S>>,
     sender: Arc<RTCRtpSender>,
     connection: PacketAudioSubscription,
     forwarder: Addr<AudioPacketForwarder>,
 }
 
-impl AudioSubscription {
+impl<S: SyncChannel> AudioSubscription<S> {
     pub async fn init(
         pc: Arc<RTCPeerConnection>, 
-        user: Addr<User>,
+        user: Addr<User<S>>,
         request: ConnectionRequest<PacketAudioSubscription>
     ) -> Result<Self, Error> {
         let ConnectionRequest { codec_mime_type, speaker_id, stream: connection, .. } = request;
@@ -56,7 +56,7 @@ pub enum Close {
     StreamForwardFail
 }
 
-impl Actor for AudioSubscription {
+impl<S: SyncChannel> Actor for AudioSubscription<S> {
     type Message = Close;
     async fn starting(&mut self, _ctx: &crate::actor::Ctx<'_, Self>) {
         tracing::info!("[AudioSubscription] starting");

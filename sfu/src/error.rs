@@ -9,8 +9,6 @@ pub enum Error {
     #[error(transparent)]
     WebRtc(#[from] webrtc::Error),
     #[error(transparent)]
-    Axum(#[from] axum::Error),
-    #[error(transparent)]
     Broadcast(#[from] RecvError),
     #[error("System failed on {message}")]
     SystemError {message: Cow<'static, str> }
