@@ -33,10 +33,9 @@ impl Actor for PliSender {
     }
     async fn handle(&mut self, ctx: &mut crate::actor::Ctx<'_, Self>, _: Self::Message) {
         let elapsed = self.instant.elapsed();
-        if elapsed < Duration::from_secs(1) { 
+        if elapsed < Duration::from_secs(2) { 
             return;
         }
-        tracing::info!("[PliSender] Send");
         if let Err(e) = self.pc.write_rtcp(&[Box::new(PictureLossIndication {
             media_ssrc: self.ssrc,
             sender_ssrc: 0

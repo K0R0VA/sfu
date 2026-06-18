@@ -1,4 +1,4 @@
-use std::{hash::Hash, sync::{Arc}};
+use std::{fmt::Debug, hash::Hash, sync::Arc};
 
 use futures_util::StreamExt;
 use tokio::{sync::{Mutex, mpsc::error::{SendError, TrySendError}}, task::AbortHandle};
@@ -39,6 +39,12 @@ async fn handle_messages<A: Actor>(actor: &mut A, ctx: &mut Ctx<'_, A>, mut mess
     id: Uuid,
     requests: tokio::sync::mpsc::Sender<<A as Actor>::Message>,
     terminate_call: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>
+}
+
+impl<A: Actor> Debug for Addr<A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.id)
+    }
 }
 
 impl<A: Actor> PartialEq for Addr<A> {

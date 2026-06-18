@@ -8,9 +8,8 @@ export class PeerConnection {
         const subscriber_pc = new RTCPeerConnection(config);
         const publisher_pc = new RTCPeerConnection(config);
         subscriber_pc.ontrack = ({ streams, track }) => {
-            console.log('new track', streams);
             const remoteStream = streams[0];
-            const rawId = remoteStream.id;
+            const rawId = remoteStream.id.split("_")[1];
             let user = users.value.get(rawId);
             if (!!user) {
                 user.stream.addTrack(track);
@@ -94,7 +93,7 @@ export class PeerConnection {
             sdp: answer.sdp
         }));
     }
-    async add_tracks(stream) {
+    async add_tracks(video_stream, audio_stream) {
         const deviceType = getDeviceType();
         const isMobile = deviceType === 'mobile';
         
@@ -126,12 +125,12 @@ export class PeerConnection {
                 scaleResolutionDownBy: 1.0,
             }
         ];
-        const videoTrack = stream.getVideoTracks()[0];
+        const videoTrack = video_stream.getVideoTracks()[0];
         this.publisher_pc.addTransceiver(videoTrack, {
             direction: 'sendonly',
             sendEncodings: encodings
         });
-        const audioTrack = stream.getAudioTracks()[0];
+        const audioTrack = audio_stream.getAudioTracks()[0];
         this.publisher_pc.addTransceiver(audioTrack, { direction: 'sendonly' });
         let offer = await this.publisher_pc.createOffer();
         await this.publisher_pc.setLocalDescription(offer);

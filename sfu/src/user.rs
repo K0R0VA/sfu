@@ -43,7 +43,7 @@ pub enum SyncMessage {
 }
 
 pub struct ConnectionRequest<T> {
-    pub speaker_id: Uuid,
+    pub peer_id: Uuid,
     pub stream: T,
     pub codec_mime_type: MimeType,
 }

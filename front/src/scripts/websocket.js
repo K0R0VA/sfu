@@ -21,12 +21,14 @@ export class UserWebsocket {
                 case 'welcome': {
                     this.peer_id = message.peer_id;
                     this.roomStatus.value = "Получение медиапотока...";
-                    const stream = await navigator.mediaDevices.getUserMedia({ 
+                    const video_stream = await navigator.mediaDevices.getUserMedia({ 
                         video: {
                             width: { ideal: 1280 },
                             height: { ideal: 720 },
                             frameRate: { ideal: 60 }
-                        },
+                        }
+                    });
+                    const audio_stream = await navigator.mediaDevices.getUserMedia({
                         audio: {
                             echoCancellation: true,        // Подавление эха (критически важно!)
                             noiseSuppression: true,        // Подавление шума
@@ -36,14 +38,14 @@ export class UserWebsocket {
                             channelCount: { ideal: 1 }     // Моно (достаточно для голоса)
                         }
                     });
-                    await this.peer_connection.add_tracks(stream);
+                    await this.peer_connection.add_tracks(video_stream, audio_stream);
                     const device_type = getDeviceType();
                     this.ws.send(JSON.stringify({
                         kind: "connect",
                         device_type
-                    }))
+                    }));
                     this.users.value.set(this.peer_id, {
-                        stream,
+                        stream: video_stream,
                         isLocal: true
                     });
                     this.isJoined.value = true;

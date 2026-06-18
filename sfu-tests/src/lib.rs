@@ -12,7 +12,8 @@ use webrtc::{ice_transport::ice_candidate::RTCIceCandidateInit,
 
 #[cfg(test)]
 mod connect_to_room;
-
+#[cfg(test)]
+mod ice_restart;
 pub struct TestClient {
     pub peer_id: Option<Uuid>,
     pub publisher_pc: Arc<RTCPeerConnection>,

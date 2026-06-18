@@ -26,7 +26,7 @@ use crate::actor::Addr;
 use crate::audio_packet_forwarder::AudioPacketForwarder;
 use crate::error::Error;
 use crate::pli_sender::PliSender;
-use crate::rtp_packet_forwarder::RtpPacketForwarder;
+use crate::rtp_packet_forwarder::RtpPacketGatewayRouter;
 use crate::user::SignalMessage;
 use crate::video_packet_forwarder::VideoPacketForwarder;
 
@@ -36,12 +36,12 @@ pub type PacketSender = tokio::sync::broadcast::Sender<Packet>;
 #[derive(Clone)]
 pub struct PacketVideoSubscription {
     pub pli_sender: Addr<PliSender>,
-    pub rtp_packet_forwarder: Addr<RtpPacketForwarder<VideoPacketForwarder>>
+    pub rtp_packet_forwarder: Addr<RtpPacketGatewayRouter<VideoPacketForwarder>>
 }
 
 #[derive(Clone)]
 pub struct PacketAudioSubscription {
-    pub rtp_packet_forwarder: Addr<RtpPacketForwarder<AudioPacketForwarder>>
+    pub rtp_packet_forwarder: Addr<RtpPacketGatewayRouter<AudioPacketForwarder>>
 }
 
 pub async fn create_peer() -> Result<RTCPeerConnection, Error> {

@@ -163,7 +163,7 @@ impl<S: SyncChannel> Room<S> {
         for (_, peer) in peers {
             let Peer { user, .. } = peer;
             let _ = user.send(UserMessage::ConnectAudio(ConnectionRequest { 
-                speaker_id: peer_id, 
+                peer_id, 
                 stream: stream.packet_subscription.clone(), 
                 codec_mime_type: stream.mime_type.clone()
             })).await;
@@ -177,7 +177,7 @@ impl<S: SyncChannel> Room<S> {
             let _ = user.send(UserMessage::ConnectVideo{ 
                 quality, 
                 request: ConnectionRequest { 
-                    speaker_id: peer_id, 
+                    peer_id, 
                     stream: stream.packet_subscription.clone(), 
                     codec_mime_type: stream.mime_type.clone()
                 }
@@ -192,7 +192,7 @@ impl<S: SyncChannel> Room<S> {
             if let Some(audio_stream) = audio_stream {
                 let _ = user.send(UserMessage::ConnectAudio(ConnectionRequest {
                     codec_mime_type: audio_stream.mime_type.clone(),
-                    speaker_id: *existed_peer_id,
+                    peer_id: *existed_peer_id,
                     stream: audio_stream.packet_subscription.clone()
                 })).await;
             }
@@ -202,7 +202,7 @@ impl<S: SyncChannel> Room<S> {
                     quality: *quaity,
                     request: ConnectionRequest {
                         codec_mime_type: video_stream.mime_type.clone(),
-                        speaker_id: *existed_peer_id,
+                        peer_id: *existed_peer_id,
                         stream: video_stream.packet_subscription.clone()
                     }
                 }).await;

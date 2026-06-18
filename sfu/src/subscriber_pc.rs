@@ -211,14 +211,14 @@ impl<S: SyncChannel> Subscriber<S> {
         Ok(())
     }
     async fn connect_audio(&mut self, request: ConnectionRequest<PacketAudioSubscription>) -> Result<(), Error> {
-        let peer_id = request.speaker_id;
+        let peer_id = request.peer_id;
         let audio_subscription = AudioSubscription::init(self.pc.clone(), self.user.clone(), request).await?;
         let audio_subscription = audio_subscription.start();
         self.audio_subscriptions.insert(peer_id, audio_subscription);
         Ok(())
     }
     async fn connect_video(&mut self, quality: StreamQuality, request: ConnectionRequest<PacketVideoSubscription>) -> Result<(), Error> {
-        let peer_id = request.speaker_id;
+        let peer_id = request.peer_id;
         match self.video_subscriptions.entry(peer_id) {
             std::collections::hash_map::Entry::Occupied(o) => {
                 let addr = o.get();

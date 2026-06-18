@@ -5,7 +5,7 @@ use crate::{
     actor::{Actor, Addr},
     audio_packet_forwarder::AudioPacketForwarder,
     error::Error,
-    rtp_packet_forwarder::RtpPacketForwarderMessage,
+    rtp_packet_forwarder::RtpPacketGatewayRouterMessage,
     user::{ConnectionRequest, User, UserMessage},
 };
 use uuid::Uuid;
@@ -19,7 +19,7 @@ use webrtc::{
 
 pub struct AudioSubscription<S: SyncChannel> {
     pc: Arc<RTCPeerConnection>,
-    speaker_id: Uuid,
+    peer_id: Uuid,
     user: Addr<User<S>>,
     sender: Arc<RTCRtpSender>,
     connection: PacketAudioSubscription,
@@ -30,7 +30,7 @@ impl<S: SyncChannel> AudioSubscription<S> {
     pub async fn init(pc: Arc<RTCPeerConnection>, user: Addr<User<S>>, request: ConnectionRequest<PacketAudioSubscription>) -> Result<Self, Error> {
         let ConnectionRequest {
             codec_mime_type,
-            speaker_id,
+            peer_id,
             stream: connection,
             ..
         } = request;
@@ -39,8 +39,8 @@ impl<S: SyncChannel> AudioSubscription<S> {
                 mime_type: codec_mime_type.to_string(),
                 ..Default::default()
             },
-            "audio".to_string(),
-            speaker_id.to_string(),
+            format!("audio_{peer_id}"),
+            format!("audio_{peer_id}")
         ));
         let sender = pc
             .add_transceiver_from_track(
@@ -57,12 +57,12 @@ impl<S: SyncChannel> AudioSubscription<S> {
             .start_with_capacity(256);
         let _ = connection
             .rtp_packet_forwarder
-            .send(RtpPacketForwarderMessage::Subscribe(forwarder.clone()))
+            .send(RtpPacketGatewayRouterMessage::Subscribe(forwarder.clone()))
             .await;
         Ok(Self {
             sender,
             pc,
-            speaker_id,
+            peer_id,
             user,
             connection,
             forwarder,
@@ -82,14 +82,14 @@ impl<S: SyncChannel> Actor for AudioSubscription<S> {
     }
     async fn handle(&mut self, _ctx: &mut crate::actor::Ctx<'_, Self>, m: Self::Message) {
         if let Close::StreamForwardFail = m {
-            let _ = self.user.send(UserMessage::Unsubscribe { user_id: self.speaker_id }).await;
+            let _ = self.user.send(UserMessage::Unsubscribe { user_id: self.peer_id }).await;
         }
     }
     async fn stopping(self, _ctx: &crate::actor::Ctx<'_, Self>) {
         let _ = self
             .connection
             .rtp_packet_forwarder
-            .send(RtpPacketForwarderMessage::Unsubscribe(self.forwarder.clone()))
+            .send(RtpPacketGatewayRouterMessage::Unsubscribe(self.forwarder.clone()))
             .await;
         self.forwarder.terminate().await;
         if let Err(e) = self.pc.remove_track(&self.sender).await {

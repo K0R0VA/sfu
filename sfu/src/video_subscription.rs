@@ -21,8 +21,8 @@ impl VideoSubscription {
                 mime_type: mime_type.to_string(),
                 ..Default::default()
             },
-            "video".to_string(),
-            peer_id.to_string(),
+            format!("video_{peer_id}"),
+            format!("video_{peer_id}")
         ));
         let active_track = pc.add_transceiver_from_track(
                 track.clone() as Arc<_>,
@@ -62,7 +62,6 @@ impl Actor for VideoSubscription {
             }
             VideoSubscriptionMessage::SwitchQualityLayer { to  } => {
                 if let Some(PacketVideoSubscription {  pli_sender, rtp_packet_forwarder }) = self.connections.get(&to) {
-                    tracing::info!("[VideoSubscription] SwitchQualityLayer {:?}", to);
                     let _ = self.packet_forwarder.send(VideoPacketForwarderMessage::LayerSwitched {
                         quality: to,
                         forwarder: rtp_packet_forwarder.clone()
@@ -82,7 +81,6 @@ impl Actor for VideoSubscription {
             while let Ok((packets, _)) = active_track.read(&mut rtcp_buf).await {
                 for packet in packets {
                     if packet.as_any().downcast_ref::<PictureLossIndication>().is_some() {
-                        tracing::info!("🎯 Поймали одиночный PLI пакета подписчика!");
                         let _ = addr.send(ForcePli).await;
                     }
                 }

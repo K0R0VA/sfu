@@ -105,7 +105,6 @@ impl<S: SyncChannel> Actor for QualityMonitor<S> {
                         }
                     };
                     if should_switch {
-                        tracing::info!("[QualityMonitor] {:?} last_bytes_received {} bitrate_bps {} packet_loss {}", quality, self.current_stats.last_bytes_received, self.current_stats.bitrate_bps, self.current_stats.packet_loss);
                         self.current_quality = Some(quality);
                         let _ = self.user
                             .send(UserMessage::SwitchQualityLayer { quality })

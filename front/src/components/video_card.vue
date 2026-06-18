@@ -15,7 +15,6 @@
           <span class="badge-dot"></span>
           <span class="badge-text">{{ peer.isLocal ? 'Вы' : 'Участник' }}</span>
         </div>
-        
         <div class="video-card__audio-indicator" v-if="!peer.isLocal && isAudioActive">
           <div class="audio-wave">
             <span></span><span></span><span></span><span></span>
