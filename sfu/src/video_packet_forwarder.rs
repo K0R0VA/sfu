@@ -13,7 +13,8 @@ pub struct VideoPacketForwarder {
     key_frame_buffer: VecDeque<Packet>,
     last_sequence_number: u16,
     last_timestamp: u32,
-    timestamp_offset: u32,
+    timestamp_offset: i64,
+    frame_delta: u32,
     is_layer_switching: bool,
     last_packet_received: Option<Instant>
 }
@@ -28,6 +29,7 @@ impl VideoPacketForwarder {
             timestamp_offset: 0,
             last_packet_received: None,
             key_frame_buffer: VecDeque::new(),
+            frame_delta: 0,
             // Стартуем в режиме ожидания первого ключевого кадра
             is_layer_switching: false, 
             current_quality: None,
@@ -52,10 +54,10 @@ impl From<(StreamQuality, Packet)> for VideoPacketForwarderMessage {
 
 impl VideoPacketForwarder {
     async fn forward(&mut self, ctx: &Ctx<'_, Self>, quality: StreamQuality, mut packet: Packet) -> Result<(), Error> {
-        // if self.is_layer_switching && self.current_quality != Some(quality) {
-        //     self.handle_pending_packets(ctx, quality, packet).await?;
-        //     return Ok(());
-        // }
+        if self.is_layer_switching && self.current_quality != Some(quality) {
+            self.handle_pending_packets(ctx, quality, packet).await?;
+            return Ok(());
+        }
         if self.current_quality == Some(quality) {
             self.apply_offsets(&mut packet);
             self.pace(packet.header.timestamp).await;
@@ -65,7 +67,6 @@ impl VideoPacketForwarder {
     }
     async fn pace(&mut self, current_ts: u32) {
         let clock_rate = 90000.0; // Для видео (VP8/VP9/H264) частота всегда 90kHz
-        
         if let (Some(last_time), last_ts) = (self.last_packet_received, self.last_timestamp) {
             if current_ts > last_ts {
                 // Вычисляем, сколько «времени» прошло между кадрами по логике RTP
@@ -76,12 +77,12 @@ impl VideoPacketForwarder {
                 let elapsed = last_time.elapsed();
                 
                 if elapsed < expected_duration {
+                    let gap = expected_duration - elapsed;
                     // Спим остаток времени, чтобы не спамить браузер
-                    tokio::time::sleep(expected_duration - elapsed).await;
+                    tokio::time::sleep(gap).await;
                 }
             }
         }
-        
         self.last_packet_received = Some(Instant::now());
         self.last_timestamp = current_ts;
     }
@@ -98,7 +99,7 @@ impl VideoPacketForwarder {
                 self.key_frame_buffer.push_front(packet);
                 return Ok(());
             }
-            self.update_offsets_on_layer_switch(&packet);
+            self.update_offsets_on_layer_switch(packet.header.timestamp);
             self.current_quality = Some(quality);
             self.is_layer_switching = false;
             if let Some(pending_channel) = self.pending_channel.take() {
@@ -115,18 +116,21 @@ impl VideoPacketForwarder {
         }
         Ok(())
     }
-    fn update_offsets_on_layer_switch(&mut self, packet: &Packet) {
-        let new_timestamp = packet.header.timestamp;
-        self.timestamp_offset = self.last_timestamp.wrapping_sub(new_timestamp);
+    fn update_frame_delta(&mut self, timestamp: u32) {
+        let gap = timestamp - self.last_timestamp;
+        self.frame_delta = if gap == 0 { self.frame_delta } else { gap }
+    }
+    fn update_offsets_on_layer_switch(&mut self, timestamp: u32) {
+        tracing::info!("{}", self.frame_delta);
+        let expected_new_ts = self.last_timestamp + self.frame_delta;
+        self.timestamp_offset = expected_new_ts as i64 - timestamp as i64;
     }
     fn apply_offsets(&mut self, packet: &mut Packet) {
-        let original_ts = packet.header.timestamp;
-        let new_ts = original_ts.wrapping_add(self.timestamp_offset);
-        // let new_seq_number = self.last_sequence_number.wrapping_add(1);
-        // packet.header.sequence_number = new_seq_number;
-        packet.header.timestamp = new_ts;
-        self.last_timestamp = new_ts;
-        // self.last_sequence_number = new_seq_number;
+        self.last_sequence_number += 1;
+        packet.header.sequence_number = self.last_sequence_number;
+        packet.header.timestamp = (packet.header.timestamp as i64 + self.timestamp_offset) as u32;
+        self.update_frame_delta(packet.header.timestamp);
+        self.last_timestamp = packet.header.timestamp;
     }
 }
 
@@ -139,10 +143,10 @@ impl Actor for VideoPacketForwarder {
         match msg {
             VideoPacketForwarderMessage::LayerSwitched {quality, forwarder } 
             if !self.is_layer_switching => {
-                // tracing::info!("[VideoPacketForwarder] LayerSwitched {:?}", quality);
-                // self.is_layer_switching = true;
-                // let _ = forwarder.do_send(RtpPacketForwarderMessage::Subscribe(ctx.addr.clone()));
-                // self.pending_channel = Some(forwarder);
+                tracing::info!("[VideoPacketForwarder] LayerSwitched {:?}", quality);
+                self.is_layer_switching = true;
+                let _ = forwarder.do_send(RtpPacketGatewayRouterMessage::Subscribe(ctx.addr.clone()));
+                self.pending_channel = Some(forwarder);
             },
             VideoPacketForwarderMessage::Start { quality, forwarder } => {
                 tracing::info!("[VideoPacketForwarder] VideoPacketForwarderMessage::Start");

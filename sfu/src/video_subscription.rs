@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::{Arc}};
+use std::{collections::{BTreeMap, HashMap}, sync::Arc, time::Duration};
 use uuid::Uuid;
 use webrtc::{peer_connection::RTCPeerConnection, rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication, rtp_transceiver::{RTCRtpTransceiverInit, rtp_codec::RTCRtpCodecCapability, rtp_sender::RTCRtpSender, rtp_transceiver_direction::RTCRtpTransceiverDirection}, track::track_local::{track_local_static_rtp::TrackLocalStaticRTP}};
 
@@ -7,15 +7,16 @@ use crate::{PacketVideoSubscription, actor::{Actor, Addr}, error::Error, pli_sen
 pub struct VideoSubscription {
     pub pc: Arc<RTCPeerConnection>,
     pub peer_id: Uuid,
-    pub connections: HashMap<StreamQuality, PacketVideoSubscription>,
+    pub connections: BTreeMap<StreamQuality, PacketVideoSubscription>,
     pub active_track: Arc<RTCRtpSender>,
     pub packet_forwarder: Addr<VideoPacketForwarder>,
     pub active_quality: StreamQuality,
+    pub waiting_high_quality: bool,
 }
 
 impl VideoSubscription {
     pub async fn new(pc: Arc<RTCPeerConnection>, peer_id: Uuid, mime_type: MimeType, stream: PacketVideoSubscription, quality: StreamQuality) -> Result<Self, Error> {
-        let mut connections = HashMap::with_capacity(3);
+        let mut connections = BTreeMap::new();
         let track: Arc<TrackLocalStaticRTP> = Arc::new(TrackLocalStaticRTP::new(
             RTCRtpCodecCapability {
                 mime_type: mime_type.to_string(),
@@ -34,7 +35,7 @@ impl VideoSubscription {
         let packet_forwarder = VideoPacketForwarder::new(track.clone(), mime_type)
             .start_with_capacity(2048);
         connections.insert(quality, stream.clone());
-        let this = Self { pc, peer_id, connections, active_track, active_quality: quality, packet_forwarder,   };
+        let this = Self { pc, peer_id, connections, active_track, active_quality: quality, packet_forwarder, waiting_high_quality: quality == StreamQuality::Low  };
         Ok(this) 
     }
 }
@@ -42,6 +43,7 @@ impl VideoSubscription {
 pub enum VideoSubscriptionMessage {
     AddSubsription { quality: StreamQuality, stream: PacketVideoSubscription },
     SwitchQualityLayer { to: StreamQuality },
+    StartLowQuality,
     ForcePli,
     Drop
 }
@@ -52,8 +54,18 @@ impl Actor for VideoSubscription {
 
     async fn handle(&mut self, ctx: &mut crate::actor::Ctx<'_, Self>, m: Self::Message) {
         match m {
+            VideoSubscriptionMessage::StartLowQuality => if self.waiting_high_quality {
+
+            }
             VideoSubscriptionMessage::AddSubsription { quality, stream } => {
-                self.connections.insert(quality, stream);
+                self.connections.insert(quality, stream.clone());
+                if self.waiting_high_quality && quality == StreamQuality::High {
+                    let _ = self.packet_forwarder.send(VideoPacketForwarderMessage::Start {
+                        quality,
+                        forwarder: stream.rtp_packet_forwarder
+                    }).await;
+                    self.waiting_high_quality = false;
+                }
             }
             VideoSubscriptionMessage::ForcePli => {
                 if let Some(connection) = self.connections.get(&self.active_quality) {
@@ -66,6 +78,7 @@ impl Actor for VideoSubscription {
                         quality: to,
                         forwarder: rtp_packet_forwarder.clone()
                     }).await;
+                    self.active_quality = to;
                     let _ = pli_sender.send(Ping).await;
                 }
             },
@@ -86,12 +99,14 @@ impl Actor for VideoSubscription {
                 }
             }
         });
-        let (quality, PacketVideoSubscription {rtp_packet_forwarder, ..}) = self.connections.iter().next().unwrap();
-        let _ = self.packet_forwarder.send(VideoPacketForwarderMessage::Start {
-            quality: *quality,
-            forwarder: rtp_packet_forwarder.clone()
-        }).await;
-        
+        if self.active_quality == StreamQuality::Low {
+            let addr = ctx.addr.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                let _ = addr.send(VideoSubscriptionMessage::StartLowQuality).await;
+            });
+            return;
+        }
         tracing::info!("[VideoSubscription] starting");
     }
 
