@@ -202,7 +202,7 @@ impl<S: SyncChannel> Actor for Publisher<S> {
         }));
     }
     async fn stopping(self, _: &Ctx<'_, Self>) {
-        self.qualify_monitor.strong().terminate().await;
+        self.qualify_monitor.try_terminate().await;
         if let Err(e) = self.pc.close().await {
             tracing::error!("[Publisher] stopping {e}");
         }

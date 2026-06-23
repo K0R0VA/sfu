@@ -10,6 +10,8 @@ pub enum Error {
     WebRtc(#[from] webrtc::Error),
     #[error(transparent)]
     Broadcast(#[from] RecvError),
+    #[error(transparent)]
+    Oneshot(#[from] tokio::sync::oneshot::error::RecvError),
     #[error("System failed on {message}")]
     SystemError {message: Cow<'static, str> }
 }

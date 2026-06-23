@@ -1,5 +1,5 @@
 export class PeerConnection {
-    constructor(users, roomStatus, ws) {
+    constructor(users, room_status, ws) {
         let config = { 
             iceServers: [
                 { urls: ["stun:stun.l.google.com:19302"] },
@@ -19,7 +19,7 @@ export class PeerConnection {
                 stream: remoteStream,
                 isLocal: false
             });
-            roomStatus.value = `Участников: ${users.value.length}`;
+            room_status.value = `Участников: ${users.value.length}`;
         };
         publisher_pc.onicecandidate = (event) => {
             if (event.candidate && event.candidate.candidate) {

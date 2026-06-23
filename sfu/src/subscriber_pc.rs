@@ -46,7 +46,7 @@ pub enum SubscriberMessage {
     Websocket (MessageType),
     ConnectAudio(ConnectionRequest<PacketAudioSubscription>),
     ConnectVideo { request: ConnectionRequest<PacketVideoSubscription>, quality: StreamQuality },
-    Unsubscribe { from: Uuid }
+    Unsubscribe { peer_id: Uuid }
 }
 
 impl<S: SyncChannel> Actor for Subscriber<S> {
@@ -114,7 +114,7 @@ impl<S: SyncChannel> Actor for Subscriber<S> {
                     self.stop(ctx).await;
                 }
             },
-            SubscriberMessage::Unsubscribe { from } => {
+            SubscriberMessage::Unsubscribe { peer_id: from } => {
                 if let Err(e) = self.disconnect_from_user(from).await {
                     tracing::error!("👤 [UserActor] UserMessage::DisconnectFromUser {:?}", e);
                     self.stop(ctx).await;

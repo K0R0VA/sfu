@@ -11,6 +11,8 @@ pub mod pli_sender;
 pub mod rtp_packet_forwarder;
 pub mod subscriber_pc;
 pub mod publisher_pc;
+pub mod server;
+
 use webrtc::api::APIBuilder;
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;

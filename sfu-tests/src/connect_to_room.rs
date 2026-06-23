@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use sfu::{actor::{Actor, StreamItem::Next}, error::Error, room::{Room, RoomMessage}, user::User};
+use sfu::{actor::{Actor, StreamItem::Next}, error::Error, room::{RoomMessage}, server::{Server, ServerMessage}, user::User};
 
 use crate::spawn_test_client;
 
@@ -9,7 +9,10 @@ async fn connect_one_user_to_room() -> Result<(), Error> {
     tracing_subscriber::fmt::fmt()
         .with_env_filter("webrtc=ERROR,webrtc_ice=ERROR,api_gateway=INFO,sfu=INFO")
         .init();
-    let room = Room::default().start();
+    let server: sfu::actor::Addr<Server<_>> = Server::default().start();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let _ = server.send(ServerMessage::CreateRoom { name: "".to_string(), response_channel: tx });
+    let (_, room) = rx.await.unwrap();
     let (channel, mut client, stream) = spawn_test_client().await?;
     let user = User::new(channel, room).await?.start();
     user.add_stream(tokio_stream::wrappers::ReceiverStream::new(stream), 
@@ -35,7 +38,10 @@ async fn connect_two_users_to_room() -> Result<(), Error> {
     tracing_subscriber::fmt::fmt()
         .with_env_filter("webrtc=ERROR,webrtc_ice=ERROR,api_gateway=INFO,sfu=INFO")
         .init();
-    let room = Room::default().start();
+    let server: sfu::actor::Addr<Server<_>> = Server::default().start();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let _ = server.send(ServerMessage::CreateRoom { name: "".to_string(), response_channel: tx });
+    let (_, room) = rx.await.unwrap();
     let task_1 = {
         let (channel, mut client, stream) = spawn_test_client().await?;
         let user = User::new(channel, room.clone()).await?;
@@ -97,7 +103,10 @@ async fn connect_many_users_to_room() -> Result<(), Error> {
     tracing_subscriber::fmt::fmt()
         .with_env_filter("webrtc=ERROR,webrtc_ice=ERROR,api_gateway=INFO,sfu=INFO")
         .init();
-    let room = Room::default().start();
+    let server: sfu::actor::Addr<Server<_>> = Server::default().start();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let _ = server.send(ServerMessage::CreateRoom { name: "".to_string(), response_channel: tx });
+    let (_, room) = rx.await.unwrap();
     let mut tasks = Vec::with_capacity(24);
     for _ in 0 .. 24 {
         let (channel, mut client, stream) = spawn_test_client().await?;

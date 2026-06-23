@@ -1,4 +1,4 @@
-use std::{collections::{BTreeMap, HashMap}, sync::Arc, time::Duration};
+use std::{collections::{BTreeMap}, sync::Arc, time::Duration};
 use uuid::Uuid;
 use webrtc::{peer_connection::RTCPeerConnection, rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication, rtp_transceiver::{RTCRtpTransceiverInit, rtp_codec::RTCRtpCodecCapability, rtp_sender::RTCRtpSender, rtp_transceiver_direction::RTCRtpTransceiverDirection}, track::track_local::{track_local_static_rtp::TrackLocalStaticRTP}};
 
@@ -55,16 +55,24 @@ impl Actor for VideoSubscription {
     async fn handle(&mut self, ctx: &mut crate::actor::Ctx<'_, Self>, m: Self::Message) {
         match m {
             VideoSubscriptionMessage::StartLowQuality => if self.waiting_high_quality {
-
+                let (quality , subscription) = self.connections.iter().next().unwrap();
+                self.waiting_high_quality = false;
+                let _ = self.packet_forwarder.send(VideoPacketForwarderMessage::Start {
+                    quality: *quality,
+                    forwarder: subscription.rtp_packet_forwarder.clone()
+                }).await;
+                let _ = subscription.pli_sender.send(Ping).await;
             }
             VideoSubscriptionMessage::AddSubsription { quality, stream } => {
                 self.connections.insert(quality, stream.clone());
                 if self.waiting_high_quality && quality == StreamQuality::High {
+                    self.waiting_high_quality = false;
+                    self.active_quality = quality;
                     let _ = self.packet_forwarder.send(VideoPacketForwarderMessage::Start {
                         quality,
                         forwarder: stream.rtp_packet_forwarder
                     }).await;
-                    self.waiting_high_quality = false;
+                    let _ = stream.pli_sender.send(Ping).await;
                 }
             }
             VideoSubscriptionMessage::ForcePli => {
@@ -102,7 +110,7 @@ impl Actor for VideoSubscription {
         if self.active_quality == StreamQuality::Low {
             let addr = ctx.addr.clone();
             tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tokio::time::sleep(Duration::from_secs(2)).await;
                 let _ = addr.send(VideoSubscriptionMessage::StartLowQuality).await;
             });
             return;

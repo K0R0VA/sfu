@@ -141,8 +141,15 @@ impl<A: Actor> WeakAddr<A> {
     pub fn set_addr(&mut self, addr: Addr<A>) {
         let _ = self.addr.insert(addr);
     } 
-    pub fn strong(&self) -> &Addr<A> {
-        self.addr.as_ref().expect("set_addr not used")
+    pub async fn try_send(&self, m: A::Message) {
+        if let Some(addr) = &self.addr {
+            let _ = addr.send(m).await;
+        }
+    }
+    pub async fn try_terminate(&self) {
+        if let Some(addr) = &self.addr {
+            let _ = addr.terminate().await;
+        }
     }
 }
 

@@ -65,7 +65,7 @@ impl<S: SyncChannel> Actor for User<S> {
                 }
             }
             UserMessage::SwitchQualityLayer { quality } => {
-                let _ = self.subscriber.strong().send(SubscriberMessage::SwitchQualityLayer { quality }).await;
+                let _ = self.subscriber.try_send(SubscriberMessage::SwitchQualityLayer { quality }).await;
             }
             UserMessage::SyncMessage(message) => {
                 if let Err(e) = self.handle_ws_message(ctx, message).await {
@@ -74,10 +74,10 @@ impl<S: SyncChannel> Actor for User<S> {
                 }
             },
             UserMessage::ConnectAudio(request) => {
-                let _ = self.subscriber.strong().send(SubscriberMessage::ConnectAudio(request)).await;
+                let _ = self.subscriber.try_send(SubscriberMessage::ConnectAudio(request)).await;
             },
             UserMessage::ConnectVideo {quality, request} => {
-                let _ = self.subscriber.strong().send(SubscriberMessage::ConnectVideo {quality, request}).await;
+                let _ = self.subscriber.try_send(SubscriberMessage::ConnectVideo {quality, request}).await;
             },
             UserMessage::RoomClosed => self.stop(ctx).await,
             UserMessage::Unsubscribe { user_id: speaker_id } => {
@@ -96,8 +96,8 @@ impl<S: SyncChannel> Actor for User<S> {
         tracing::info!("🟢 [Userctor] Пользователь инициализирован.");
     }
     async fn stopping(self, _: &Ctx<'_, Self>) {
-        self.subscriber.strong().terminate().await;
-        self.publisher.strong().terminate().await;
+        self.subscriber.try_terminate().await;
+        self.publisher.try_terminate().await;
         let _ = self.room.send(RoomMessage::Leave { peer_id: self.peer_id.clone() }).await;
         tracing::info!("🔴 [UserActor] Пользователь уничтожен.");
     }
@@ -111,6 +111,7 @@ pub enum SignalMessage {
         #[serde(flatten)] 
         message_type: MessageType,
     },
+    RoomInfo { name: String, },
     Welcome { peer_id: Uuid, },
     PeerLeft { peer_id: Uuid },
     Connect { device_type: DeviceType },
@@ -175,15 +176,15 @@ impl<S: SyncChannel> User<S> {
         };
         match message {
             SignalMessage::Connect { device_type } => {
-                let _ = self.publisher.strong().send(PublisherMessage::InitiateMonitoring { device_type }).await;
+                let _ = self.publisher.try_send(PublisherMessage::InitiateMonitoring { device_type }).await;
             },
             SignalMessage::Rtc { target, message_type } => {
                 match target {
                     Target::Publisher => {
-                        let _ = self.publisher.strong().send(PublisherMessage::Websocket(message_type)).await;
+                        let _ = self.publisher.try_send(PublisherMessage::Websocket(message_type)).await;
                     }
                     Target::Subscriber => {
-                        let _ = self.subscriber.strong().send(SubscriberMessage::Websocket(message_type)).await;
+                        let _ = self.subscriber.try_send(SubscriberMessage::Websocket(message_type)).await;
                     }
                 }
             },
@@ -195,9 +196,9 @@ impl<S: SyncChannel> User<S> {
         self.sync_channel.send(msg.into()).await?;
         Ok(())
     }
-    async fn unsubscribe(&mut self, speaker_id: Uuid) -> Result<(), Error> {
-        let _ = self.subscriber.strong().send(SubscriberMessage::Unsubscribe { from: speaker_id }).await;
-        self.sync_channel.send(SignalMessage::PeerLeft { peer_id: self.peer_id }.into()).await?;
+    async fn unsubscribe(&mut self, peer_id: Uuid) -> Result<(), Error> {
+        let _ = self.subscriber.try_send(SubscriberMessage::Unsubscribe { peer_id }).await;
+        self.sync_channel.send(SignalMessage::PeerLeft { peer_id }.into()).await?;
         Ok(())
     }
 }

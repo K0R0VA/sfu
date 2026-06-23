@@ -1,6 +1,7 @@
-use axum::{extract::ws::Message, response::Response};
+use axum::{Json, extract::{Path, ws::Message}, response::Response, routing::post};
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
-use sfu::{SyncChannel, actor::{self, Actor, Addr}, room::{Room, RoomMessage}, user::{SyncMessage, User, UserMessage::{self}}};
+use serde::{Deserialize, Serialize};
+use sfu::{SyncChannel, actor::{self, Actor, Addr}, server::{Server, ServerMessage}, user::{SignalMessage, SyncMessage, User, UserMessage::{self}}};
 use tower_http::services::ServeDir;
 
 use axum::{
@@ -9,19 +10,22 @@ use axum::{
     extract::{State, WebSocketUpgrade},
     extract::ws::WebSocket,
 };
+use uuid::Uuid;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 24)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::fmt()
         .with_env_filter("webrtc=ERROR,webrtc_ice=ERROR,api_gateway=INFO,sfu=INFO")
         .init();
-    let room_actor = Room::default().start();
+    let room_actor = Server::default().start();
     let app = Router::new()
         .fallback_service(
             ServeDir::new("front/dist")
                 .append_index_html_on_directories(true)
         )
-        .route("/ws", get(ws_handler))
+        .route("/ws/{room_id}", get(ws_handler))
+        .route("/api/rooms", get(rooms))
+        .route("/api/rooms", post(create_room))
         .with_state(room_actor);
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
     tracing::info!("🚀 Единый SFU Сервер запущен на http://localhost:8080");
@@ -30,31 +34,72 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn ws_handler(
+    room_id: Path<Uuid>,
     ws: WebSocketUpgrade,
-    State(room): State<Addr<Room<WebsocketSync>>>,
+    State(server): State<Addr<Server<WebsocketSync>>>,
 ) -> Response {
-    ws.on_upgrade(|socket| {
-        connect_websocket(socket, room)
+    let room_id = room_id.0;
+    ws.on_upgrade(move |socket| async move {
+        if let Err(e) = try_connect_websocket(room_id, socket, server).await {
+            tracing::error!("websocket failed {e}");
+        }
     })
 }
 
-async fn connect_websocket(ws: WebSocket,
-    room: Addr<Room<WebsocketSync>>) {
-        if let Err(e) = try_connect_websocket(ws, room).await {
-            tracing::error!("websocket failed {e}");
-        }
-    }
+async fn rooms(
+    State(server): State<Addr<Server<WebsocketSync>>>,
+) -> Response {
+    let rooms = match server.get_rooms().await {
+        Ok(rooms) => rooms,
+        Err(e) => return Response::new(e.to_string().into())
+    };
+    Response::new(serde_json::to_string(&rooms).unwrap().into())
+}
+
+#[derive(Deserialize)]
+pub struct CreateRoomRequest {
+    name: String
+}
+
+#[derive(Serialize)]
+pub struct CreateRoomResponse {
+    id: Uuid
+}
+
+async fn create_room(
+    State(server): State<Addr<Server<WebsocketSync>>>,
+    Json(CreateRoomRequest { name }): Json<CreateRoomRequest>,
+) -> Response {
+    let room_id = match server.create_room(name).await {
+        Ok((room_id, _)) => CreateRoomResponse { id: room_id },
+        Err(e) => return Response::new(e.to_string().into())
+    };
+    Response::new(serde_json::to_string(&room_id).unwrap().into())
+}
+
 
 async fn try_connect_websocket(
+    room_id: Uuid,
     ws: WebSocket,
-    room: Addr<Room<WebsocketSync>>
+    server: Addr<Server<WebsocketSync>>
 ) -> Result<(), sfu::error::Error> {
     let (ws_tx, ws_rx) = ws.split();
-    let sync_channel = WebsocketSync {socket: ws_tx};
+    let mut sync_channel = WebsocketSync {socket: ws_tx};
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let _ = server.send(ServerMessage::GetRoomAddr { room_id, response_channel: tx }).await;
+    let (room_name, room) = match rx.await? {
+        Some(room) => room,
+        None => {
+            sync_channel.send("Room not found".into()).await?;
+            return Ok(());
+        }
+    };
+    let message = serde_json::to_string(&SignalMessage::RoomInfo { name: room_name })?;
+    sync_channel.send(message).await?;
     let user = User::new(sync_channel, room.clone()).await?;
-    let peer_id = user.peer_id;
-    let user = user.start();
-    user.add_stream(ws_rx, |msg| {
+    let user_id = user.peer_id;
+    let addr = user.start();
+    addr.add_stream(ws_rx, |msg| {
         let message = match msg {
             Ok(Message::Text(text)) => {
                 let message = match serde_json::from_slice(text.as_bytes()) {
@@ -72,7 +117,7 @@ async fn try_connect_websocket(
         };
         actor::StreamItem::Next(UserMessage::SyncMessage(message)) 
     });
-    let _ = room.send(RoomMessage::Join { peer_id, addr: user }).await;
+    let _ = server.send(ServerMessage::JoinRoom { room_id, user_id, addr }).await;
     Ok(())
 }
 

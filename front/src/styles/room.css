@@ -1,0 +1,10 @@
+.room-view {
+  height: 100%;
+  padding: 24px;
+}
+
+@media (max-width: 768px) {
+  .room-view {
+    padding: 16px;
+  }
+}

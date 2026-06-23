@@ -1,55 +1,46 @@
+/* Глобальные стили */
 * {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
 }
 
-body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  min-height: 100vh;
+html, body {
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  background: var(--bg-primary, #0a0a1a);
+  color: var(--text-primary, #ffffff);
 }
 
 #app {
-  min-height: 100vh;
-}
-
-.app {
-  min-height: 100vh;
-  background: rgba(255, 255, 255, 0.96);
+  height: 100vh;
   display: flex;
   flex-direction: column;
 }
 
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
 .main-content {
   flex: 1;
-  padding: 2rem;
-  max-width: 1400px;
-  margin: 0 auto;
-  width: 100%;
+  overflow: hidden;
+  position: relative;
 }
 
-@media (max-width: 768px) {
-  .main-content {
-    padding: 1rem;
-  }
-}
-
-/* Scrollbar styling */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-::-webkit-scrollbar-track {
-  background: #f1f1f1;
-}
-
-::-webkit-scrollbar-thumb {
-  background: #888;
-  border-radius: 4px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: #555;
+/* CSS переменные */
+:root {
+  --bg-primary: #0a0a1a;
+  --bg-secondary: #1a1a2e;
+  --bg-input: #0f1424;
+  --bg-hover: #1a1f35;
+  --text-primary: #ffffff;
+  --text-secondary: #8892b0;
+  --border-color: #2a3a5e;
+  --primary: #4a6cf7;
+  --primary-gradient: linear-gradient(135deg, #4a6cf7, #6c5ce7);
+  --danger: #ef4444;
+  --success: #4ade80;
 }

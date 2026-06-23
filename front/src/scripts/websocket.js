@@ -1,31 +1,32 @@
 import { PeerConnection, getDeviceType } from "./webrtc";
 
 export class UserWebsocket {
-    constructor(users, roomStatus, isConnecting, isJoined, error) {
-        this.ws = createWebSocket();
-        this.peer_connection = new PeerConnection(users, roomStatus, this.ws);
-        this.roomStatus = roomStatus;
-        this.isConnecting = isConnecting;
-        this.isJoined = isJoined;
+    constructor(users, room_id, room_status, room_name) {
+        this.ws = createWebSocket(room_id.value);
+        this.peer_connection = new PeerConnection(users, room_status, this.ws);
+        this.room_status = room_status;
+        this.room_name = room_name;
         this.users = users;
-        this.error = error;
     }
     init() {
         this.ws.onopen = () => {
             console.log(`🟢 WebSocket соединен`);
-            this.roomStatus.value = "Соединение установлено";
+            this.room_status.value = "Соединение установлено";
         };
         this.ws.onmessage = async (event) => {
             const message = JSON.parse(event.data);
             switch (message.kind) {
+                case 'room_info': {
+                    this.room_name.value = message.name;
+                }
                 case 'welcome': {
                     this.peer_id = message.peer_id;
-                    this.roomStatus.value = "Получение медиапотока...";
+                    this.room_status.value = "Получение медиапотока...";
                     const video_stream = await navigator.mediaDevices.getUserMedia({ 
                         video: {
                             width: { ideal: 1280 },
                             height: { ideal: 720 },
-                            frameRate: { ideal: 60 }
+                            frameRate: { ideal: 30 }
                         }
                     });
                     const audio_stream = await navigator.mediaDevices.getUserMedia({
@@ -48,9 +49,7 @@ export class UserWebsocket {
                         stream: video_stream,
                         isLocal: true
                     });
-                    this.isJoined.value = true;
-                    this.isConnecting.value = false;
-                    this.roomStatus.value = "Подключено";
+                    this.room_status.value = "Подключено";
                     break;
                 }
                 case 'rtc': {
@@ -84,7 +83,7 @@ export class UserWebsocket {
         this.ws.onclose = () => {
             console.log("🔴 Соединение закрыто");
             this.isConnecting.value = false;
-            this.roomStatus.value = "Соединение потеряно";
+            this.room_status.value = "Соединение потеряно";
         };
     }
     disconnect() {
@@ -99,18 +98,16 @@ export class UserWebsocket {
         finally {
             this.peer_id = null;
             this.users.value.clear();
-            this.isJoined.value = false;
-            this.isJoined.value = false;
-            this.roomStatus.value = 'Готов к подключению';
+            this.room_status.value = 'Готов к подключению';
         }
     }
 }
 
-function createWebSocket () {
-    const serverIP = window.location.hostname;
-    if (serverIP === 'localhost') {
-        return new WebSocket(`ws://${serverIP}:8080/ws`);
+function createWebSocket (room_id) {
+    const hostname = window.location.hostname;
+    if (hostname === 'localhost') {
+        return new WebSocket(`ws://${hostname}:8080/ws/${room_id}`);
     } else {
-        return new WebSocket(`wss://${serverIP}/ws`);
+        return new WebSocket(`wss://${hostname}/ws/${room_id}`);
     }
 };

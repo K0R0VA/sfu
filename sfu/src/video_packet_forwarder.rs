@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, sync::Arc, time::{Duration, Instant}};
+use std::{collections::VecDeque, sync::Arc, time::{Instant}};
 
 use webrtc::{rtp::packet::Packet, track::track_local::{TrackLocalWriter, track_local_static_rtp::TrackLocalStaticRTP}};
 
@@ -121,7 +121,6 @@ impl VideoPacketForwarder {
         self.frame_delta = if gap == 0 { self.frame_delta } else { gap }
     }
     fn update_offsets_on_layer_switch(&mut self, timestamp: u32) {
-        tracing::info!("{}", self.frame_delta);
         let expected_new_ts = self.last_timestamp + self.frame_delta;
         self.timestamp_offset = expected_new_ts as i64 - timestamp as i64;
     }

@@ -1,15 +1,21 @@
 use std::{collections::HashMap, fmt::{Display}, str::FromStr};
 use uuid::Uuid;
 
-use crate::{PacketAudioSubscription, PacketVideoSubscription, SyncChannel, actor::{Actor, Addr, Ctx}, error::Error, pli_sender::Ping, user::{ConnectionRequest, User, UserMessage}};
+use crate::{PacketAudioSubscription, PacketVideoSubscription, SyncChannel, actor::{Actor, Addr, Ctx}, error::Error, pli_sender::Ping, server::Server, user::{ConnectionRequest, User, UserMessage}};
 
 pub struct Room<S: SyncChannel> {
+    pub id: Uuid,
+    server: Addr<Server<S>>,
     peers: HashMap<Uuid, Peer<S>>
 }
 
-impl<S: SyncChannel> Default for Room<S> {
-    fn default() -> Self {
+
+
+impl<S: SyncChannel>  Room<S> {
+    pub fn new(server: Addr<Server<S>>) -> Self {
         Self {
+            server,
+            id: Uuid::new_v4(),
             peers: HashMap::new()
         }
     }
