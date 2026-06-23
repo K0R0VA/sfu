@@ -69,7 +69,7 @@ onUnmounted(() => {
   this.leaveRoom();
 });
 
-// Переподключение при изменении ID комнаты
+
 watch(room_id, () => {
   connectToRoom();
 });

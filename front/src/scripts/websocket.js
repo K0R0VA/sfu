@@ -2,6 +2,7 @@ import { PeerConnection, getDeviceType } from "./webrtc";
 
 export class UserWebsocket {
     constructor(users, room_id, room_status, room_name) {
+        console.log('connect webscocket');
         this.ws = createWebSocket(room_id.value);
         this.peer_connection = new PeerConnection(users, room_status, this.ws);
         this.room_status = room_status;
@@ -18,6 +19,7 @@ export class UserWebsocket {
             switch (message.kind) {
                 case 'room_info': {
                     this.room_name.value = message.name;
+                    break;
                 }
                 case 'welcome': {
                     this.peer_id = message.peer_id;

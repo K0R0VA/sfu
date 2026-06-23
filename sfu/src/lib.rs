@@ -27,7 +27,6 @@ use webrtc::rtp_transceiver::rtp_codec::{RTCRtpHeaderExtensionCapability, RTPCod
 use crate::actor::Addr;
 use crate::audio_packet_forwarder::AudioPacketForwarder;
 use crate::error::Error;
-use crate::pli_sender::PliSender;
 use crate::rtp_packet_forwarder::RtpPacketGatewayRouter;
 use crate::user::SignalMessage;
 use crate::video_packet_forwarder::VideoPacketForwarder;
@@ -37,7 +36,6 @@ pub type PacketSender = tokio::sync::broadcast::Sender<Packet>;
 
 #[derive(Clone)]
 pub struct PacketVideoSubscription {
-    pub pli_sender: Addr<PliSender>,
     pub rtp_packet_forwarder: Addr<RtpPacketGatewayRouter<VideoPacketForwarder>>
 }
 

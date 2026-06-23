@@ -2,7 +2,7 @@ use std::{collections::{BTreeMap}, sync::Arc, time::Duration};
 use uuid::Uuid;
 use webrtc::{peer_connection::RTCPeerConnection, rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication, rtp_transceiver::{RTCRtpTransceiverInit, rtp_codec::RTCRtpCodecCapability, rtp_sender::RTCRtpSender, rtp_transceiver_direction::RTCRtpTransceiverDirection}, track::track_local::{track_local_static_rtp::TrackLocalStaticRTP}};
 
-use crate::{PacketVideoSubscription, actor::{Actor, Addr}, error::Error, pli_sender::Ping, room::{MimeType, StreamQuality}, video_packet_forwarder::{VideoPacketForwarder, VideoPacketForwarderMessage}, video_subscription::VideoSubscriptionMessage::ForcePli};
+use crate::{PacketVideoSubscription, actor::{Actor, Addr}, error::Error, room::{MimeType, StreamQuality}, rtp_packet_forwarder::RtpPacketGatewayRouterMessage, video_packet_forwarder::{VideoPacketForwarder, VideoPacketForwarderMessage}};
 
 pub struct VideoSubscription {
     pub pc: Arc<RTCPeerConnection>,
@@ -44,8 +44,8 @@ pub enum VideoSubscriptionMessage {
     AddSubsription { quality: StreamQuality, stream: PacketVideoSubscription },
     SwitchQualityLayer { to: StreamQuality },
     StartLowQuality,
-    ForcePli,
-    Drop
+    Drop,
+    ForcePli
 }
 
 
@@ -61,7 +61,6 @@ impl Actor for VideoSubscription {
                     quality: *quality,
                     forwarder: subscription.rtp_packet_forwarder.clone()
                 }).await;
-                let _ = subscription.pli_sender.send(Ping).await;
             }
             VideoSubscriptionMessage::AddSubsription { quality, stream } => {
                 self.connections.insert(quality, stream.clone());
@@ -72,22 +71,18 @@ impl Actor for VideoSubscription {
                         quality,
                         forwarder: stream.rtp_packet_forwarder
                     }).await;
-                    let _ = stream.pli_sender.send(Ping).await;
                 }
             }
-            VideoSubscriptionMessage::ForcePli => {
-                if let Some(connection) = self.connections.get(&self.active_quality) {
-                    let _ = connection.pli_sender.send(Ping).await;
-                }
+            VideoSubscriptionMessage::ForcePli => if let Some(PacketVideoSubscription { rtp_packet_forwarder }) = self.connections.get(&self.active_quality) {
+                let _  = rtp_packet_forwarder.send(RtpPacketGatewayRouterMessage::ForcePli).await;
             }
             VideoSubscriptionMessage::SwitchQualityLayer { to  } => {
-                if let Some(PacketVideoSubscription {  pli_sender, rtp_packet_forwarder }) = self.connections.get(&to) {
+                if let Some(PacketVideoSubscription {  rtp_packet_forwarder }) = self.connections.get(&to) {
                     let _ = self.packet_forwarder.send(VideoPacketForwarderMessage::LayerSwitched {
                         quality: to,
                         forwarder: rtp_packet_forwarder.clone()
                     }).await;
                     self.active_quality = to;
-                    let _ = pli_sender.send(Ping).await;
                 }
             },
             VideoSubscriptionMessage::Drop => self.stop(ctx).await,
@@ -102,7 +97,7 @@ impl Actor for VideoSubscription {
             while let Ok((packets, _)) = active_track.read(&mut rtcp_buf).await {
                 for packet in packets {
                     if packet.as_any().downcast_ref::<PictureLossIndication>().is_some() {
-                        let _ = addr.send(ForcePli).await;
+                        let _ = addr.send(VideoSubscriptionMessage::ForcePli).await;
                     }
                 }
             }

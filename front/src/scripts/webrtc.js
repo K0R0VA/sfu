@@ -94,6 +94,7 @@ export class PeerConnection {
         }));
     }
     async add_tracks(video_stream, audio_stream) {
+        console.log('add tracks');
         const deviceType = getDeviceType();
         const isMobile = deviceType === 'mobile';
         
@@ -125,13 +126,13 @@ export class PeerConnection {
                 scaleResolutionDownBy: 1.0,
             }
         ];
-        const videoTrack = video_stream.getVideoTracks()[0];
-        this.publisher_pc.addTransceiver(videoTrack, {
+        const video_track = video_stream.getVideoTracks()[0];
+        this.publisher_pc.addTransceiver(video_track, {
             direction: 'sendonly',
             sendEncodings: encodings
         });
-        const audioTrack = audio_stream.getAudioTracks()[0];
-        this.publisher_pc.addTransceiver(audioTrack, { direction: 'sendonly' });
+        const audio_track = audio_stream.getAudioTracks()[0];
+        this.publisher_pc.addTransceiver(audio_track, { direction: 'sendonly' });
         let offer = await this.publisher_pc.createOffer();
         await this.publisher_pc.setLocalDescription(offer);
         this.ws.send(JSON.stringify({

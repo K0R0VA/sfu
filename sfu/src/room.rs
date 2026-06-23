@@ -1,7 +1,7 @@
 use std::{collections::HashMap, fmt::{Display}, str::FromStr};
 use uuid::Uuid;
 
-use crate::{PacketAudioSubscription, PacketVideoSubscription, SyncChannel, actor::{Actor, Addr, Ctx}, error::Error, pli_sender::Ping, server::Server, user::{ConnectionRequest, User, UserMessage}};
+use crate::{PacketAudioSubscription, PacketVideoSubscription, SyncChannel, actor::{Actor, Addr, Ctx}, error::Error, server::Server, user::{ConnectionRequest, User, UserMessage}};
 
 pub struct Room<S: SyncChannel> {
     pub id: Uuid,
@@ -203,7 +203,6 @@ impl<S: SyncChannel> Room<S> {
                 })).await;
             }
             for (quaity, video_stream) in video_streams {
-                let _ = video_stream.packet_subscription.pli_sender.send(Ping).await;
                 let _ = user.send(UserMessage::ConnectVideo {
                     quality: *quaity,
                     request: ConnectionRequest {

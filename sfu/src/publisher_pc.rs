@@ -1,13 +1,13 @@
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 use uuid::Uuid;
-use webrtc::{ice_transport::{ice_candidate::RTCIceCandidateInit, ice_connection_state::RTCIceConnectionState}, peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription}, rtp_transceiver::rtp_codec::RTPCodecType};
+use webrtc::{ice_transport::{ice_candidate::RTCIceCandidateInit, ice_connection_state::RTCIceConnectionState}, peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription}, rtp::packet::Packet, rtp_transceiver::rtp_codec::RTPCodecType};
 use crate::{PacketAudioSubscription, PacketVideoSubscription, SyncChannel, actor::{Actor, Addr, Ctx, WeakAddr}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, pli_sender::{Ping, PliSender}, quality_monitor::{DeviceType, QualityMonitor, QualityThresholds}, room::{MimeType, Room, RoomMessage, StreamQuality}, rtp_packet_forwarder::RtpPacketGatewayRouter, user::{IceCandidate, MessageType, SignalMessage, Target, User, UserMessage, initiate_ice_restart}, video_packet_forwarder::VideoPacketForwarder};
 
 pub struct Publisher<S: SyncChannel> {
     pub peer_id: Uuid,
     pub pc: Arc<RTCPeerConnection>,
-    pub video_tracks: HashMap<StreamQuality, VideoTrack>,
-    pub audio_track: Option<AudioTrack>,
+    pub video_tracks: HashMap<StreamQuality, Track<VideoPacketForwarder>>,
+    pub audio_track: Option<Track<AudioPacketForwarder>>,
     pub user: Addr<User<S>>,
     pub room: Addr<Room<S>>,    
     pub qualify_monitor: WeakAddr<QualityMonitor<S>>,
@@ -15,17 +15,18 @@ pub struct Publisher<S: SyncChannel> {
     pub retry_connect_attempts: u8,
 }
 
-#[derive(Clone)]
-pub struct AudioTrack {
+pub struct Track<T: Actor> where T::Message: From<(StreamQuality, Packet)> {
     mime_type: MimeType,
-    addr: Addr<RtpPacketGatewayRouter<AudioPacketForwarder>>
+    addr: Addr<RtpPacketGatewayRouter<T>>
 }
 
-#[derive(Clone)]
-pub struct VideoTrack {
-    mime_type: MimeType,
-    pli_sender: Addr<PliSender>,
-    addr: Addr<RtpPacketGatewayRouter<VideoPacketForwarder>>
+impl<T: Actor> Clone for Track<T> where T::Message: From<(StreamQuality, Packet)> {
+    fn clone(&self) -> Self {
+        Self {
+            addr: self.addr.clone(),
+            mime_type: self.mime_type.clone()
+        }
+    }
 }
 
 const TARGET: Target = Target::Publisher;
@@ -58,8 +59,8 @@ pub enum PublisherMessage {
         candidate: IceCandidate,
     },
     InitiateMonitoring { device_type: DeviceType },
-    NewAudioTrack(AudioTrack),
-    NewVideoTrack{ quality: StreamQuality, track: VideoTrack },
+    NewAudioTrack(Track<AudioPacketForwarder>),
+    NewVideoTrack{ quality: StreamQuality, track: Track<VideoPacketForwarder> },
 }
 
 impl<S: SyncChannel> Actor for Publisher<S> {
@@ -111,7 +112,6 @@ impl<S: SyncChannel> Actor for Publisher<S> {
                             stream: crate::room::PeerStream { 
                                 packet_subscription: PacketVideoSubscription {
                                     rtp_packet_forwarder: track.addr,
-                                    pli_sender: track.pli_sender
                                 }, 
                                 mime_type: track.mime_type 
                             }, 
@@ -181,18 +181,18 @@ impl<S: SyncChannel> Actor for Publisher<S> {
             Box::pin(async move {
                 match kind {
                     RTPCodecType::Audio | RTPCodecType::Unspecified => { 
-                        let rtp_packet_forwarder= RtpPacketGatewayRouter::<AudioPacketForwarder>::spawn(track, StreamQuality::Audio);
+                        let rtp_packet_forwarder= RtpPacketGatewayRouter::<AudioPacketForwarder>::spawn(track, StreamQuality::Audio, None);
                         let _ = addr.send(
-                            PublisherMessage::NewAudioTrack(AudioTrack { mime_type, addr: rtp_packet_forwarder })
+                            PublisherMessage::NewAudioTrack(Track { mime_type, addr: rtp_packet_forwarder })
                         ).await;
                     },
                     RTPCodecType::Video => {
                         let pli_sender = PliSender::new(pc.clone(), ssrc).start();
                         let quality = rid.unwrap_or(StreamQuality::High);
-                        let rtp_packet_forwarder= RtpPacketGatewayRouter::<VideoPacketForwarder>::spawn(track, quality);
+                        let rtp_packet_forwarder= RtpPacketGatewayRouter::<VideoPacketForwarder>::spawn(track, quality, Some(pli_sender));
                         let _ = addr.send(
                             PublisherMessage::NewVideoTrack {
-                                track: VideoTrack { mime_type, pli_sender, addr: rtp_packet_forwarder } , 
+                                track: Track { mime_type, addr: rtp_packet_forwarder } , 
                                 quality 
                             }
                         ).await;
@@ -223,9 +223,9 @@ impl<S: SyncChannel> Publisher<S> {
             RTCIceConnectionState::Connected if self.disconnected => {
                 self.disconnected = false;
                 self.retry_connect_attempts = 0;
-                for VideoTrack { pli_sender, .. } in self.video_tracks.values() {
-                    let _ = pli_sender.send(Ping).await;
-                }
+                // for VideoTrack { pli_sender, .. } in self.video_tracks.values() {
+                //     let _ = pli_sender.send(Ping).await;
+                // }
             },
             _ => {}
         }
