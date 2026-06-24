@@ -20,7 +20,7 @@ const room_id = computed(() => route.params.room_id);
 
 
 // Получаем состояние от App
-const { room_name, room_status } = inject('roomState');
+const { room_name, room_status, is_in_room } = inject('roomState');
 let websocket = null;
 
 const users = computed(() => {
@@ -43,19 +43,12 @@ const connectToRoom = () => {
     room_status,
     room_name
   );
-};
-
-// Выход из комнаты
-const leaveRoom = () => {
-  websocket.disconnect();
-  users_map.value.clear();
-  room_status.value = 'Покинул комнату';
-  router.push('/');
+  is_in_room.value = true;
 };
 
 // Обработка закрытия страницы
 const handleBeforeUnload = (event) => {
-  if (isJoined.value) {
+  if (is_in_room.value) {
     event.preventDefault();
     event.returnValue = 'Вы уверены, что хотите покинуть комнату?';
   }
@@ -66,7 +59,13 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
-  this.leaveRoom();
+  if (websocket) {
+    websocket.disconnect();
+  }
+  users_map.value.clear();
+  room_status.value = 'Покинул комнату';
+  is_in_room.value = false;
+  router.push('/');
 });
 
 

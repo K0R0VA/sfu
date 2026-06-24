@@ -4,12 +4,12 @@
     <AppHeader 
       :room-status="room_status"
       :room-name="room_name"
+      :is-in-room="is_in_room"
       @leave="handleLeave"
     />
     <main class="main-content">
       <router-view 
-        :room-status="room_status"
-        @leave-room="handleLeaveRoom"
+        @leave-room="handleLeave"
       />
     </main>
   </div>
@@ -26,10 +26,12 @@ const router = useRouter();
 
 const room_status = ref('Не в сети');
 const room_name = ref('');
+const is_in_room = ref(false);
 
 // Предоставляем состояние дочерним компонентам
 provide('roomState', {
   room_status,
+  is_in_room,
   room_name,
 });
 
@@ -38,3 +40,4 @@ const handleLeave = () => {
 };
 
 </script>
+<style src="./styles/main.css" scoped></style>

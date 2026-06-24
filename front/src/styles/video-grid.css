@@ -1,67 +1,85 @@
-.empty-state {
-  display: flex;
-  align-items: center;
+.video-grid {
+  display: grid;
+  /* Автоматически подбирает колонки, пытаясь держать карточки не меньше 320px */
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  /* Равномерное распределение строк */
+  grid-auto-rows: 1fr; 
+  gap: 16px;
+  width: 100%;
+  height: 100%;
+  max-width: 1400px; /* Чтобы на огромных мониторах сетка не растягивалась чересчур сильно */
+  margin: 0 auto;
+  align-content: center; /* Центрируем карточки по вертикали, если их мало */
   justify-content: center;
-  min-height: 60vh;
 }
 
+/* --- ОСОБЫЕ КЕЙСЫ ДЛЯ ОПТИМИЗАЦИИ ПРОСТРАНСТВА --- */
+
+/* Если в комнате только 1 участник — растягиваем его максимально красиво */
+.video-grid:has(> :nth-child(1):last-child) {
+  grid-template-columns: minmax(auto, 800px);
+  grid-auto-rows: auto;
+}
+
+/* Если в комнате ровно 2 участника — выстраиваем их в 2 колонки на ПК */
+@media (min-width: 768px) {
+  .video-grid:has(> :nth-child(2):last-child) {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* --- СОСТОЯНИЕ «НИКОГО НЕТ» ВНУТРИ СЕТКИ --- */
+/* Используем БЭМ-классы из вашего HTML */
 .empty-state__content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   text-align: center;
-  animation: fadeInUp 0.6s ease;
+  margin: auto; /* Идеальное центрирование внутри flex-родителя */
+  padding: 40px;
+  background-color: var(--bg-surface);
+  border-radius: var(--radius-lg);
+  border: 1px dashed rgba(255, 255, 255, 0.1);
+  max-width: 400px;
+  box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.5);
 }
 
 .empty-state__icon {
-  font-size: 4rem;
-  margin-bottom: 1rem;
-  opacity: 0.5;
+  font-size: 54px;
+  margin-bottom: 20px;
+  animation: pulse-icon 2s infinite ease-in-out;
 }
 
 .empty-state__content h3 {
-  font-size: 1.5rem;
-  color: #374151;
-  margin-bottom: 0.5rem;
+  font-size: 20px;
   font-weight: 600;
+  margin-bottom: 10px;
+  color: var(--text-main);
 }
 
 .empty-state__content p {
-  color: #6b7280;
-  font-size: 0.875rem;
+  font-size: 14px;
+  color: var(--text-muted);
+  line-height: 1.5;
 }
 
-.video-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
-  gap: 1.5rem;
-  animation: fadeIn 0.5s ease;
+/* Анимация для иконки камеры, пока комната пуста */
+@keyframes pulse-icon {
+  0%, 100% { transform: scale(1); opacity: 0.8; }
+  50% { transform: scale(1.1); opacity: 1; }
 }
 
-@keyframes fadeInUp {
-  from {
-    opacity: 0;
-    transform: translateY(20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
-@media (max-width: 640px) {
+/* --- МОБИЛЬНАЯ АДАПТАЦИЯ СЕТКИ --- */
+@media (max-width: 480px) {
   .video-grid {
-    grid-template-columns: 1fr;
-    gap: 1rem;
+    /* На телефонах переключаемся на минимальную ширину карточек поменьше */
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 10px;
   }
   
-  .empty-state__content h3 {
-    font-size: 1.25rem;
+  .empty-state__content {
+    padding: 24px;
+    margin: 20px;
   }
 }

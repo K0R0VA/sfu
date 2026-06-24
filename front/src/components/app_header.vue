@@ -2,19 +2,6 @@
   <header class="header">
     <div class="header-container">
       <div class="header-left">
-        <!-- Кнопка назад (показывается только в комнате) -->
-        <button 
-          v-if="isInRoom" 
-          @click="$emit('back')" 
-          class="back-btn"
-          title="Вернуться к списку комнат"
-        >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M19 12H5M12 19l-7-7 7-7"/>
-          </svg>
-          <span>Назад</span>
-        </button>
-
         <div class="logo" :class="{ 'with-back-btn': isInRoom }">
           <div class="logo-icon">
             <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
@@ -29,7 +16,6 @@
           </div>
         </div>
       </div>
-
       <div class="header-center">
         <div class="status" :class="statusClass">
           <span class="status-dot"></span>
@@ -40,28 +26,6 @@
           <span class="room-name-text">{{ roomName }}</span>
         </div>
       </div>
-
-      <div class="header-right">
-        <!-- Кнопка выхода (показывается только когда в комнате) -->
-        <button 
-          v-if="isJoined"
-          @click="$emit('leave')"
-          class="leave-btn"
-        >
-          <span class="btn-icon">🚪</span>
-          <span>Выйти</span>
-        </button>
-        
-        <!-- Индикатор подключения -->
-        <button 
-          v-if="isConnecting"
-          class="join-btn connecting"
-          disabled
-        >
-          <div class="spinner"></div>
-          <span>Подключение</span>
-        </button>
-      </div>
     </div>
   </header>
 </template>
@@ -70,8 +34,6 @@
 import { computed } from 'vue';
 
 const props = defineProps({
-  isJoined: Boolean,
-  isConnecting: Boolean,
   roomStatus: String,
   isInRoom: {
     type: Boolean,
@@ -83,12 +45,5 @@ const props = defineProps({
   }
 });
 
-const emit = defineEmits(['join', 'leave', 'back']);
-
-const statusClass = computed(() => {
-  if (props.isJoined) return 'status-online';
-  if (props.isConnecting) return 'status-connecting';
-  return 'status-offline';
-});
 </script>
 <style src="../styles/header.css" scoped></style>

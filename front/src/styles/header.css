@@ -1,337 +1,145 @@
 .header {
-  background: var(--bg-secondary, #1a1a2e);
-  border-bottom: 1px solid var(--border-color, #2a3a5e);
-  padding: 12px 24px;
-  flex-shrink: 0;
-  z-index: 100;
-  position: relative;
+  height: var(--header-height);
+  background-color: var(--bg-surface);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  align-items: center;
+  padding: 0 24px;
+  user-select: none;
 }
 
 .header-container {
-  max-width: 1400px;
-  margin: 0 auto;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 16px;
+  width: 100%;
 }
 
+/* --- ЛЕВАЯ ЧАСТЬ: ЛОГОТИП --- */
 .header-left {
   display: flex;
   align-items: center;
-  gap: 12px;
-  min-width: 0;
-}
-
-.back-btn {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 16px;
-  background: transparent;
-  color: var(--text-secondary, #8892b0);
-  border: 1px solid var(--border-color, #2a3a5e);
-  border-radius: 8px;
-  cursor: pointer;
-  font-size: 0.9rem;
-  font-weight: 500;
-  transition: all 0.2s ease;
-  white-space: nowrap;
-}
-
-.back-btn:hover {
-  background: var(--border-color, #2a3a5e);
-  color: var(--text-primary, #ffffff);
-  transform: translateX(-2px);
-}
-
-.back-btn:active {
-  transform: translateX(-4px) scale(0.98);
-}
-
-.back-btn svg {
-  flex-shrink: 0;
 }
 
 .logo {
   display: flex;
   align-items: center;
   gap: 12px;
-  text-decoration: none;
-  transition: opacity 0.2s;
+  transition: transform 0.2s ease;
 }
 
+/* Если появится кнопка «Назад», можно слегка сдвинуть или стилизовать логотип */
 .logo.with-back-btn {
-  margin-left: 0;
+  position: relative;
 }
 
 .logo-icon {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--primary, #4a6cf7);
-  flex-shrink: 0;
+  color: var(--accent);
+  background: rgba(59, 130, 246, 0.1);
+  padding: 8px;
+  border-radius: var(--radius-md);
 }
 
 .logo-text {
   display: flex;
   flex-direction: column;
-  line-height: 1.2;
 }
 
 .logo-title {
-  font-size: 1.2rem;
-  font-weight: 700;
-  color: var(--text-primary, #ffffff);
-  letter-spacing: -0.5px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
 }
 
 .logo-subtitle {
-  font-size: 0.65rem;
-  color: var(--text-secondary, #8892b0);
+  font-size: 11px;
+  color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 1px;
-  font-weight: 600;
+  margin-top: -1px;
 }
 
+/* --- ЦЕНТРАЛЬНАЯ ЧАСТЬ: СТАТУС И КОМНАТА --- */
 .header-center {
   display: flex;
   align-items: center;
-  gap: 12px;
-  flex: 1;
-  justify-content: center;
-  min-width: 0;
+  gap: 16px;
 }
 
+/* Динамические статусы (предполагаем классы: .connected, .connecting, .disconnected) */
 .status {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 14px;
-  border-radius: 20px;
-  font-size: 0.85rem;
+  background-color: var(--bg-element);
+  padding: 6px 12px;
+  border-radius: 20px; /* Полностью круглые края */
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  font-size: 13px;
   font-weight: 500;
-  white-space: nowrap;
 }
 
 .status-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  flex-shrink: 0;
-  transition: background-color 0.3s;
+  background-color: var(--text-muted);
+  position: relative;
+}
+
+/* Стилизация статусов на основе возможных классов из statusClass */
+.status.connected .status-dot {
+  background-color: #10b981; /* Зеленый */
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
+}
+
+.status.connecting .status-dot {
+  background-color: #f59e0b; /* Желтый */
+  animation: status-pulse 1.5s infinite ease-in-out;
+}
+
+.status.disconnected .status-dot {
+  background-color: var(--danger); /* Красный */
 }
 
 .status-text {
-  color: var(--text-secondary, #8892b0);
+  color: var(--text-main);
 }
 
-/* Статусы */
-.status-offline .status-dot {
-  background: #f87171;
-}
-
-.status-offline .status-text {
-  color: #f87171;
-}
-
-.status-online .status-dot {
-  background: #4ade80;
-}
-
-.status-online .status-text {
-  color: #4ade80;
-}
-
-.status-connecting .status-dot {
-  background: #fbbf24;
-  animation: pulse 1s infinite;
-}
-
-.status-connecting .status-text {
-  color: #fbbf24;
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
-}
-
-/* Бейдж с названием комнаты */
+/* Плашка с названием комнаты */
 .room-name-badge {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 12px;
-  background: rgba(74, 108, 247, 0.1);
-  border: 1px solid rgba(74, 108, 247, 0.2);
-  border-radius: 20px;
-  font-size: 0.85rem;
-  white-space: nowrap;
+  gap: 8px;
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.15), rgba(59, 130, 246, 0.05));
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  padding: 6px 14px;
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  font-weight: 600;
+  color: #93c5fd; /* Облегченный синий оттенок для текста */
 }
 
 .room-name-icon {
-  font-size: 0.9rem;
+  font-size: 14px;
 }
 
-.room-name-text {
-  color: var(--text-primary, #ffffff);
-  font-weight: 500;
-  max-width: 150px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.header-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-/* Кнопки */
-.leave-btn {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 20px;
-  background: var(--danger, #ef4444);
-  color: white;
-  border: none;
-  border-radius: 8px;
-  font-size: 0.9rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s;
-  white-space: nowrap;
-}
-
-.leave-btn:hover {
-  background: #dc2626;
-  transform: translateY(-2px);
-  box-shadow: 0 4px 15px rgba(239, 68, 68, 0.3);
-}
-
-.join-btn.connecting {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 20px;
-  background: var(--bg-input, #0f1424);
-  color: var(--text-secondary, #8892b0);
-  border: 1px solid var(--border-color, #2a3a5e);
-  border-radius: 8px;
-  font-size: 0.9rem;
-  font-weight: 500;
-  cursor: not-allowed;
-  white-space: nowrap;
-  opacity: 0.6;
-}
-
-.btn-icon {
-  font-size: 1rem;
-}
-
-/* Спиннер для кнопки подключения */
-.spinner {
-  width: 16px;
-  height: 16px;
-  border: 2px solid var(--border-color, #2a3a5e);
-  border-top: 2px solid var(--primary, #4a6cf7);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-  flex-shrink: 0;
-}
-
-@keyframes spin {
-  0% { transform: rotate(0deg); }
-  100% { transform: rotate(360deg); }
-}
-
-/* Адаптивность */
-@media (max-width: 1024px) {
-  .header-center {
-    gap: 8px;
+/* --- АНИМАЦИИ --- */
+@keyframes status-pulse {
+  0% {
+    transform: scale(0.9);
+    opacity: 0.6;
   }
-  
-  .room-name-badge {
-    display: none;
+  50% {
+    transform: scale(1.1);
+    opacity: 1;
+    box-shadow: 0 0 10px rgba(245, 158, 11, 0.7);
   }
-}
-
-@media (max-width: 768px) {
-  .header {
-    padding: 10px 16px;
-  }
-  
-  .header-container {
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-  
-  .header-left {
-    flex: 1;
-  }
-  
-  .header-center {
-    order: 3;
-    flex: 0 0 100%;
-    justify-content: flex-start;
-    padding-left: 4px;
-  }
-  
-  .logo-title {
-    font-size: 1rem;
-  }
-  
-  .logo-subtitle {
-    font-size: 0.55rem;
-  }
-  
-  .status {
-    font-size: 0.75rem;
-    padding: 2px 10px;
-  }
-  
-  .back-btn {
-    padding: 6px 12px;
-    font-size: 0.8rem;
-  }
-  
-  .back-btn span {
-    display: none;
-  }
-  
-  .leave-btn {
-    padding: 6px 14px;
-    font-size: 0.8rem;
-  }
-  
-  .btn-icon {
-    font-size: 0.9rem;
-  }
-}
-
-@media (max-width: 480px) {
-  .header {
-    padding: 8px 12px;
-  }
-  
-  .header-right {
-    gap: 4px;
-  }
-  
-  .leave-btn span:not(.btn-icon) {
-    display: none;
-  }
-  
-  .leave-btn {
-    padding: 8px 12px;
-  }
-  
-  .status-text {
-    max-width: 80px;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  100% {
+    transform: scale(0.9);
+    opacity: 0.6;
   }
 }

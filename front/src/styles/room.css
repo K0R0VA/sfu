@@ -1,10 +1,19 @@
 .room-view {
-  height: 100%;
-  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  /* Занимает всю высоту контентной области за вычетом хедера */
+  height: 100%; 
+  background-color: var(--bg-main);
+  position: relative;
+  overflow: hidden;
+  /* Добавляем небольшой внутренний отступ для эстетичного отображения сетки */
+  padding: 16px; 
 }
 
-@media (max-width: 768px) {
+/* Адаптивность для мобильных экранов: уменьшаем отступы, чтобы дать больше места видео */
+@media (max-width: 600px) {
   .room-view {
-    padding: 16px;
+    padding: 8px;
   }
 }
