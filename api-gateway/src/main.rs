@@ -1,8 +1,8 @@
-use axum::{Json, extract::{Path, ws::Message}, response::Response, routing::post};
+use axum::{Json, extract::{Path, ws::Message}, response::{ Response}, routing::post};
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use serde::{Deserialize, Serialize};
 use sfu::{SyncChannel, actor::{self, Actor, Addr}, server::{Server, ServerMessage}, user::{SignalMessage, SyncMessage, User, UserMessage::{self}}};
-use tower_http::services::ServeDir;
+use tower_http::services::{ServeDir, ServeFile};
 
 use axum::{
     routing::get,
@@ -18,15 +18,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_env_filter("webrtc=ERROR,webrtc_ice=ERROR,api_gateway=INFO,sfu=INFO")
         .init();
     let room_actor = Server::default().start();
-    let app = Router::new()
-        .fallback_service(
-            ServeDir::new("front/dist")
-                .append_index_html_on_directories(true)
-        )
-        .route("/ws/{room_id}", get(ws_handler))
-        .route("/api/rooms", get(rooms))
-        .route("/api/rooms", post(create_room))
+    let api_router = Router::new()
+        .route("/rooms", get(rooms))
+        .route("/room", post(create_room))
+        .route("/room/{room_id}", get(ws_handler))
         .with_state(room_actor);
+    let app = Router::new()
+        .nest_service("/assets", ServeDir::new("front/dist/assets"))
+        .fallback_service(ServeFile::new("front/dist/index.html"))
+        .nest("/api", api_router);
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
     tracing::info!("🚀 Единый SFU Сервер запущен на http://localhost:8080");
     axum::serve(listener, app).await?;

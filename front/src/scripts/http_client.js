@@ -14,7 +14,7 @@ export class HttpClient {
         return rooms;
     }
     async create_room() {
-        const response = await fetch(`${this.domain}/rooms`, {
+        const response = await fetch(`${this.domain}/room`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name })
