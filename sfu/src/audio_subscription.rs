@@ -1,12 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    PacketAudioSubscription, SyncChannel,
-    actor::{Actor, Addr},
-    audio_packet_forwarder::AudioPacketForwarder,
-    error::Error,
-    rtp_packet_forwarder::RtpPacketGatewayRouterMessage,
-    user::{ConnectionRequest, User, UserMessage},
+    SyncChannel, actor::{Actor, Addr}, audio_packet_forwarder::AudioPacketForwarder, error::Error, rtp_packet_forwarder::{self, RtpPacketGatewayRouter, RtpPacketGatewayRouterMessage}, user::{ConnectionRequest, User, UserMessage},
 };
 use uuid::Uuid;
 use webrtc::{
@@ -20,18 +15,18 @@ use webrtc::{
 pub struct AudioSubscription<S: SyncChannel> {
     pc: Arc<RTCPeerConnection>,
     peer_id: Uuid,
-    user: Addr<User<S>>,
+    user_addr: Addr<User<S>>,
     sender: Arc<RTCRtpSender>,
-    connection: PacketAudioSubscription,
     forwarder: Addr<AudioPacketForwarder>,
+    gateway_router: Addr<RtpPacketGatewayRouter<AudioPacketForwarder>>,
 }
 
 impl<S: SyncChannel> AudioSubscription<S> {
-    pub async fn init(pc: Arc<RTCPeerConnection>, user: Addr<User<S>>, request: ConnectionRequest<PacketAudioSubscription>) -> Result<Self, Error> {
+    pub async fn init(pc: Arc<RTCPeerConnection>, user: Addr<User<S>>, request: ConnectionRequest<AudioPacketForwarder>) -> Result<Self, Error> {
         let ConnectionRequest {
             codec_mime_type,
             peer_id,
-            stream: connection,
+            gateway_router,
             ..
         } = request;
         let output_track: Arc<TrackLocalStaticRTP> = Arc::new(TrackLocalStaticRTP::new(
@@ -55,17 +50,16 @@ impl<S: SyncChannel> AudioSubscription<S> {
             .await;
         let forwarder = AudioPacketForwarder { track: output_track.clone() }
             .start_with_capacity(256);
-        let _ = connection
-            .rtp_packet_forwarder
+        let _ = gateway_router
             .send(RtpPacketGatewayRouterMessage::Subscribe(forwarder.clone()))
             .await;
         Ok(Self {
             sender,
             pc,
             peer_id,
-            user,
-            connection,
+            user_addr: user,
             forwarder,
+            gateway_router
         })
     }
 }
@@ -82,13 +76,12 @@ impl<S: SyncChannel> Actor for AudioSubscription<S> {
     }
     async fn handle(&mut self, _ctx: &mut crate::actor::Ctx<'_, Self>, m: Self::Message) {
         if let Close::StreamForwardFail = m {
-            let _ = self.user.send(UserMessage::Unsubscribe { user_id: self.peer_id }).await;
+            let _ = self.user_addr.send(UserMessage::Unsubscribe { user_id: self.peer_id }).await;
         }
     }
     async fn stopping(self, _ctx: &crate::actor::Ctx<'_, Self>) {
         let _ = self
-            .connection
-            .rtp_packet_forwarder
+            .gateway_router
             .send(RtpPacketGatewayRouterMessage::Unsubscribe(self.forwarder.clone()))
             .await;
         self.forwarder.terminate().await;

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use webrtc::{peer_connection::{RTCPeerConnection, offer_answer_options::RTCOfferOptions, }, };
-use crate::{PacketAudioSubscription, PacketVideoSubscription, SyncChannel, actor::{Actor, Addr, Ctx, WeakAddr}, error::Error, publisher_pc::{Publisher, PublisherMessage}, quality_monitor::DeviceType, room::{MimeType, Room, RoomMessage, StreamQuality}, subscriber_pc::{Subscriber, SubscriberMessage}};
+use webrtc::{peer_connection::{RTCPeerConnection, offer_answer_options::RTCOfferOptions, }, rtp::packet::Packet, };
+use crate::{SyncChannel, actor::{Actor, Addr, Ctx, WeakAddr}, audio_packet_forwarder::AudioPacketForwarder, error::Error, publisher_pc::{Publisher, PublisherMessage}, quality_monitor::DeviceType, room::{MimeType, Room, RoomMessage, StreamQuality}, rtp_packet_forwarder::RtpPacketGatewayRouter, subscriber_pc::{Subscriber, SubscriberMessage}, video_packet_forwarder::VideoPacketForwarder};
 
 pub struct User<S: SyncChannel> {
     pub room: Addr<Room<S>>,
@@ -28,8 +28,8 @@ pub enum UserMessage {
     SignalMessage(SignalMessage),
     SwitchQualityLayer { quality: StreamQuality },
     SyncMessage(SyncMessage),
-    ConnectAudio(ConnectionRequest<PacketAudioSubscription>),
-    ConnectVideo { request: ConnectionRequest<PacketVideoSubscription>, quality: StreamQuality },
+    ConnectAudio(ConnectionRequest<AudioPacketForwarder>),
+    ConnectVideo { request: ConnectionRequest<VideoPacketForwarder>, quality: StreamQuality },
     Unsubscribe {
         user_id: Uuid,
     },
@@ -42,9 +42,9 @@ pub enum SyncMessage {
     Error(String)
 }
 
-pub struct ConnectionRequest<T> {
+pub struct ConnectionRequest<T: Actor> where T::Message: From<(StreamQuality, Packet)>  {
     pub peer_id: Uuid,
-    pub stream: T,
+    pub gateway_router: Addr<RtpPacketGatewayRouter<T>>,
     pub codec_mime_type: MimeType,
 }
 

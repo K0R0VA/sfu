@@ -17,10 +17,6 @@
         </div>
       </div>
       <div class="header-center">
-        <div class="status" :class="statusClass">
-          <span class="status-dot"></span>
-          <span class="status-text">{{ roomStatus }}</span>
-        </div>
         <div v-if="isInRoom && roomName" class="room-name-badge">
           <span class="room-name-icon">🏠</span>
           <span class="room-name-text">{{ roomName }}</span>

@@ -1,19 +1,16 @@
 .room-view {
-  display: flex;
-  flex-direction: column;
   width: 100%;
-  /* Занимает всю высоту контентной области за вычетом хедера */
-  height: 100%; 
-  background-color: var(--bg-main);
-  position: relative;
-  overflow: hidden;
-  /* Добавляем небольшой внутренний отступ для эстетичного отображения сетки */
-  padding: 16px; 
 }
 
-/* Адаптивность для мобильных экранов: уменьшаем отступы, чтобы дать больше места видео */
-@media (max-width: 600px) {
-  .room-view {
-    padding: 8px;
-  }
+.video-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1.5rem;
+  width: 100%;
+}
+
+/* Если видео одно — делаем его аккуратным по центру */
+.video-grid:has(> :nth-child(1):last-child) {
+  max-width: 800px;
+  margin: 0 auto;
 }

@@ -23,26 +23,11 @@ use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::rtp::packet::Packet;
 use webrtc::rtp_transceiver::rtp_codec::{RTCRtpHeaderExtensionCapability, RTPCodecType};
-
-use crate::actor::Addr;
-use crate::audio_packet_forwarder::AudioPacketForwarder;
 use crate::error::Error;
-use crate::rtp_packet_forwarder::RtpPacketGatewayRouter;
 use crate::user::SignalMessage;
-use crate::video_packet_forwarder::VideoPacketForwarder;
 
 
 pub type PacketSender = tokio::sync::broadcast::Sender<Packet>;
-
-#[derive(Clone)]
-pub struct PacketVideoSubscription {
-    pub rtp_packet_forwarder: Addr<RtpPacketGatewayRouter<VideoPacketForwarder>>
-}
-
-#[derive(Clone)]
-pub struct PacketAudioSubscription {
-    pub rtp_packet_forwarder: Addr<RtpPacketGatewayRouter<AudioPacketForwarder>>
-}
 
 pub async fn create_peer() -> Result<RTCPeerConnection, Error> {
     let mut m = MediaEngine::default();

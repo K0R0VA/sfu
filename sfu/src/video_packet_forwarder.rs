@@ -42,8 +42,8 @@ impl VideoPacketForwarder {
 
 pub enum VideoPacketForwarderMessage {
     RtpPacket { packet: Packet, quality: StreamQuality },
-    Start { quality: StreamQuality, forwarder: Addr<RtpPacketGatewayRouter<VideoPacketForwarder>> },
-    LayerSwitched { quality: StreamQuality, forwarder: Addr<RtpPacketGatewayRouter<VideoPacketForwarder>> }
+    Start { quality: StreamQuality, gateway_router: Addr<RtpPacketGatewayRouter<VideoPacketForwarder>> },
+    LayerSwitched { quality: StreamQuality, gateway_router: Addr<RtpPacketGatewayRouter<VideoPacketForwarder>> }
 }
 
 impl From<(StreamQuality, Packet)> for VideoPacketForwarderMessage {
@@ -140,14 +140,14 @@ impl Actor for VideoPacketForwarder {
     }
     async fn handle(&mut self, ctx: &mut crate::actor::Ctx<'_, Self>, msg: Self::Message) {
         match msg {
-            VideoPacketForwarderMessage::LayerSwitched {quality, forwarder } 
+            VideoPacketForwarderMessage::LayerSwitched {quality, gateway_router: forwarder } 
             if !self.is_layer_switching => {
                 tracing::info!("[VideoPacketForwarder] LayerSwitched {:?}", quality);
                 self.is_layer_switching = true;
                 let _ = forwarder.do_send(RtpPacketGatewayRouterMessage::Subscribe(ctx.addr.clone()));
                 self.pending_channel = Some(forwarder);
             },
-            VideoPacketForwarderMessage::Start { quality, forwarder } => {
+            VideoPacketForwarderMessage::Start { quality, gateway_router: forwarder } => {
                 tracing::info!("[VideoPacketForwarder] VideoPacketForwarderMessage::Start");
                 self.current_quality = Some(quality);
                 let _ = forwarder.do_send(RtpPacketGatewayRouterMessage::Subscribe(ctx.addr.clone()));

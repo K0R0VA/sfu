@@ -1,15 +1,14 @@
 use std::{collections::HashMap, fmt::{Display}, str::FromStr};
 use uuid::Uuid;
+use webrtc::rtp::packet::Packet;
 
-use crate::{PacketAudioSubscription, PacketVideoSubscription, SyncChannel, actor::{Actor, Addr, Ctx}, error::Error, server::Server, user::{ConnectionRequest, User, UserMessage}};
+use crate::{SyncChannel, actor::{Actor, Addr, Ctx}, audio_packet_forwarder::AudioPacketForwarder, error::Error, rtp_packet_forwarder::RtpPacketGatewayRouter, server::Server, user::{ConnectionRequest, User, UserMessage}, video_packet_forwarder::VideoPacketForwarder};
 
 pub struct Room<S: SyncChannel> {
     pub id: Uuid,
     server: Addr<Server<S>>,
     peers: HashMap<Uuid, Peer<S>>
 }
-
-
 
 impl<S: SyncChannel>  Room<S> {
     pub fn new(server: Addr<Server<S>>) -> Self {
@@ -23,21 +22,21 @@ impl<S: SyncChannel>  Room<S> {
 
 pub struct Peer<S: SyncChannel> {
     pub user: Addr<User<S>>,
-    pub video_streams: HashMap<StreamQuality, PeerStream<PacketVideoSubscription>>,
-    pub audio_stream: Option<PeerStream<PacketAudioSubscription>>
+    pub video_tracks: HashMap<StreamQuality, PeerTrack<VideoPacketForwarder>>,
+    pub audio_track: Option<PeerTrack<AudioPacketForwarder>>
 }
 
 impl<S: SyncChannel> Peer<S> {
-    fn add_audio_track(&mut self, stream: PeerStream<PacketAudioSubscription>) {
-        self.audio_stream = Some(stream);
+    fn add_audio_track(&mut self, stream: PeerTrack<AudioPacketForwarder>) {
+        self.audio_track = Some(stream);
     }
-    fn add_stream_track(&mut self, quality: StreamQuality, stream: PeerStream<PacketVideoSubscription>) {
-        self.video_streams.insert(quality, stream);
+    fn add_stream_track(&mut self, quality: StreamQuality, stream: PeerTrack<VideoPacketForwarder>) {
+        self.video_tracks.insert(quality, stream);
     }
 }
 
-pub struct PeerStream<T> {
-    pub packet_subscription: T,
+pub struct PeerTrack<T: Actor> where T::Message: From<(StreamQuality, Packet)> {
+    pub gateway_router:  Addr<RtpPacketGatewayRouter<T>>,
     pub mime_type: MimeType,
 }
 
@@ -107,11 +106,11 @@ pub enum RoomMessage<S: SyncChannel> {
     },
     AddAudioTrack {
         peer_id: Uuid,
-        stream: PeerStream<PacketAudioSubscription>
+        track: PeerTrack<AudioPacketForwarder>
     },
     AddVideoTrack {
         peer_id: Uuid,
-        stream: PeerStream<PacketVideoSubscription>,
+        track: PeerTrack<VideoPacketForwarder>,
         quality: StreamQuality
     },
     // Выход пользователя
@@ -131,12 +130,12 @@ impl<S: SyncChannel> Actor for Room<S> {
             RoomMessage::SubscribeToPeers { peer_id } => {
                 self.connect_old_streams(peer_id).await;
             }
-            RoomMessage::AddAudioTrack { peer_id, mut stream } => {
+            RoomMessage::AddAudioTrack { peer_id, track: mut stream } => {
                 self.connect_new_audio_stream(peer_id, &mut stream).await;
                 let peer = self.peers.get_mut(&peer_id).unwrap();
                 peer.add_audio_track(stream);
             },
-            RoomMessage::AddVideoTrack { peer_id, mut stream, quality } => {
+            RoomMessage::AddVideoTrack { peer_id, track: mut stream, quality } => {
                 tracing::info!("[RoomActor] AddVideoTrack");
                 self.connect_new_video_stream(peer_id, quality, &mut stream).await;
                 let peer = self.peers.get_mut(&peer_id).unwrap();
@@ -163,19 +162,19 @@ impl<S: SyncChannel> Actor for Room<S> {
 }
 
 impl<S: SyncChannel> Room<S> {
-    async fn connect_new_audio_stream(&mut self, peer_id: Uuid, stream: &mut PeerStream<PacketAudioSubscription>) {
+    async fn connect_new_audio_stream(&mut self, peer_id: Uuid, stream: &mut PeerTrack<AudioPacketForwarder>) {
         let peers = self.peers.iter()
             .filter(|(id, _)| **id != peer_id);
         for (_, peer) in peers {
             let Peer { user, .. } = peer;
             let _ = user.send(UserMessage::ConnectAudio(ConnectionRequest { 
                 peer_id, 
-                stream: stream.packet_subscription.clone(), 
+                gateway_router: stream.gateway_router.clone(), 
                 codec_mime_type: stream.mime_type.clone()
             })).await;
         }
     }
-    async fn connect_new_video_stream(&mut self, peer_id: Uuid, quality: StreamQuality, stream: &mut PeerStream<PacketVideoSubscription>) {
+    async fn connect_new_video_stream(&mut self, peer_id: Uuid, quality: StreamQuality, stream: &mut PeerTrack<VideoPacketForwarder>) {
         let peers = self.peers.iter()
             .filter(|(id, _)| **id != peer_id);
         for (_, peer) in peers {
@@ -184,7 +183,7 @@ impl<S: SyncChannel> Room<S> {
                 quality, 
                 request: ConnectionRequest { 
                     peer_id, 
-                    stream: stream.packet_subscription.clone(), 
+                    gateway_router: stream.gateway_router.clone(), 
                     codec_mime_type: stream.mime_type.clone()
                 }
             }).await;
@@ -194,12 +193,12 @@ impl<S: SyncChannel> Room<S> {
         let Some(Peer { user, .. }) = self.peers.get(&peer_id) else { return ; };
         let stream = self.peers.iter()
             .filter(|(id, _)| **id != peer_id);
-        for (existed_peer_id, Peer { audio_stream, video_streams, .. }) in stream {
+        for (existed_peer_id, Peer { audio_track: audio_stream, video_tracks: video_streams, .. }) in stream {
             if let Some(audio_stream) = audio_stream {
                 let _ = user.send(UserMessage::ConnectAudio(ConnectionRequest {
                     codec_mime_type: audio_stream.mime_type.clone(),
                     peer_id: *existed_peer_id,
-                    stream: audio_stream.packet_subscription.clone()
+                    gateway_router: audio_stream.gateway_router.clone()
                 })).await;
             }
             for (quaity, video_stream) in video_streams {
@@ -208,13 +207,13 @@ impl<S: SyncChannel> Room<S> {
                     request: ConnectionRequest {
                         codec_mime_type: video_stream.mime_type.clone(),
                         peer_id: *existed_peer_id,
-                        stream: video_stream.packet_subscription.clone()
+                        gateway_router: video_stream.gateway_router.clone()
                     }
                 }).await;
             }
         }
     }
     fn add_peer(&mut self, peer_id: Uuid, user: Addr<User<S>>) {
-        self.peers.insert(peer_id, Peer { user, video_streams: HashMap::with_capacity(3), audio_stream: None });
+        self.peers.insert(peer_id, Peer { user, video_tracks: HashMap::with_capacity(3), audio_track: None });
     }
 }

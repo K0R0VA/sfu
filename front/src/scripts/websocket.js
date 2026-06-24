@@ -108,8 +108,8 @@ export class UserWebsocket {
 function createWebSocket (room_id) {
     const hostname = window.location.hostname;
     if (hostname === 'localhost') {
-        return new WebSocket(`ws://${hostname}:8080/api/ws/${room_id}`);
+        return new WebSocket(`ws://${hostname}:8080/api/room/${room_id}`);
     } else {
-        return new WebSocket(`wss://${hostname}/api/ws/${room_id}`);
+        return new WebSocket(`wss://${hostname}/api/room/${room_id}`);
     }
 };

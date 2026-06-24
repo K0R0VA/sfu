@@ -1,7 +1,7 @@
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 use uuid::Uuid;
 use webrtc::{ice_transport::{ice_candidate::RTCIceCandidateInit, ice_connection_state::RTCIceConnectionState}, peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription}, rtp::packet::Packet, rtp_transceiver::rtp_codec::RTPCodecType};
-use crate::{PacketAudioSubscription, PacketVideoSubscription, SyncChannel, actor::{Actor, Addr, Ctx, WeakAddr}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, pli_sender::{Ping, PliSender}, quality_monitor::{DeviceType, QualityMonitor, QualityThresholds}, room::{MimeType, Room, RoomMessage, StreamQuality}, rtp_packet_forwarder::RtpPacketGatewayRouter, user::{IceCandidate, MessageType, SignalMessage, Target, User, UserMessage, initiate_ice_restart}, video_packet_forwarder::VideoPacketForwarder};
+use crate::{SyncChannel, actor::{Actor, Addr, Ctx, WeakAddr}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, pli_sender::{Ping, PliSender}, quality_monitor::{DeviceType, QualityMonitor, QualityThresholds}, room::{MimeType, Room, RoomMessage, StreamQuality}, rtp_packet_forwarder::RtpPacketGatewayRouter, user::{IceCandidate, MessageType, SignalMessage, Target, User, UserMessage, initiate_ice_restart}, video_packet_forwarder::VideoPacketForwarder};
 
 pub struct Publisher<S: SyncChannel> {
     pub peer_id: Uuid,
@@ -90,9 +90,9 @@ impl<S: SyncChannel> Actor for Publisher<S> {
                 self.audio_track = Some(track.clone());
                 let _ = self.room.send(RoomMessage::AddAudioTrack { 
                         peer_id: self.peer_id, 
-                        stream: crate::room::PeerStream { packet_subscription: PacketAudioSubscription {
-                            rtp_packet_forwarder: track.addr,
-                        }, mime_type: track.mime_type 
+                        track: crate::room::PeerTrack { 
+                         gateway_router:   track.addr,
+                         mime_type: track.mime_type 
                     }, 
                 }).await;
             }
@@ -109,10 +109,8 @@ impl<S: SyncChannel> Actor for Publisher<S> {
                         let _ = self.room.send(RoomMessage::AddVideoTrack { 
                             peer_id: self.peer_id, 
                             quality,
-                            stream: crate::room::PeerStream { 
-                                packet_subscription: PacketVideoSubscription {
-                                    rtp_packet_forwarder: track.addr,
-                                }, 
+                            track: crate::room::PeerTrack { 
+                                gateway_router: track.addr,
                                 mime_type: track.mime_type 
                             }, 
                         }).await;

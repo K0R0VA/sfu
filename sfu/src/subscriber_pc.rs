@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::{Arc}};
 use uuid::Uuid;
 use webrtc::{ice_transport::{ice_candidate::RTCIceCandidateInit, ice_connection_state::RTCIceConnectionState}, peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription, signaling_state::RTCSignalingState}};
-use crate::{PacketAudioSubscription, PacketVideoSubscription, SyncChannel, actor::{Actor, Addr, Ctx}, audio_subscription::AudioSubscription, create_peer, error::Error, quality_monitor::QualityMonitor, room::StreamQuality, user::{ConnectionRequest, IceCandidate, MessageType, SignalMessage, Target, User, UserMessage, initiate_ice_restart}, video_subscription::{VideoSubscription, VideoSubscriptionMessage}};
+use crate::{SyncChannel, actor::{Actor, Addr, Ctx}, audio_packet_forwarder::AudioPacketForwarder, audio_subscription::AudioSubscription, create_peer, error::Error, quality_monitor::QualityMonitor, room::StreamQuality, user::{ConnectionRequest, IceCandidate, MessageType, SignalMessage, Target, User, UserMessage, initiate_ice_restart}, video_packet_forwarder::VideoPacketForwarder, video_subscription::{VideoSubscription, VideoSubscriptionMessage}};
 
 pub struct Subscriber<S: SyncChannel> {
     pub user: Addr<User<S>>,
@@ -44,8 +44,8 @@ pub enum SubscriberMessage {
         candidate: IceCandidate,
     },
     Websocket (MessageType),
-    ConnectAudio(ConnectionRequest<PacketAudioSubscription>),
-    ConnectVideo { request: ConnectionRequest<PacketVideoSubscription>, quality: StreamQuality },
+    ConnectAudio(ConnectionRequest<AudioPacketForwarder>),
+    ConnectVideo { request: ConnectionRequest<VideoPacketForwarder>, quality: StreamQuality },
     Unsubscribe { peer_id: Uuid }
 }
 
@@ -210,26 +210,26 @@ impl<S: SyncChannel> Subscriber<S> {
         }
         Ok(())
     }
-    async fn connect_audio(&mut self, request: ConnectionRequest<PacketAudioSubscription>) -> Result<(), Error> {
+    async fn connect_audio(&mut self, request: ConnectionRequest<AudioPacketForwarder>) -> Result<(), Error> {
         let peer_id = request.peer_id;
         let audio_subscription = AudioSubscription::init(self.pc.clone(), self.user.clone(), request).await?;
         let audio_subscription = audio_subscription.start();
         self.audio_subscriptions.insert(peer_id, audio_subscription);
         Ok(())
     }
-    async fn connect_video(&mut self, quality: StreamQuality, request: ConnectionRequest<PacketVideoSubscription>) -> Result<(), Error> {
+    async fn connect_video(&mut self, quality: StreamQuality, request: ConnectionRequest<VideoPacketForwarder>) -> Result<(), Error> {
         let peer_id = request.peer_id;
         match self.video_subscriptions.entry(peer_id) {
             std::collections::hash_map::Entry::Occupied(o) => {
                 let addr = o.get();
-                let _ = addr.send(VideoSubscriptionMessage::AddSubsription { quality, stream: request.stream }).await;
+                let _ = addr.send(VideoSubscriptionMessage::AddSubsription { quality, gateway_router: request.gateway_router }).await;
             },
             std::collections::hash_map::Entry::Vacant(v) => {
                 let video_subscription = VideoSubscription::new(
                     self.pc.clone(), 
                     peer_id, 
                     request.codec_mime_type, 
-                    request.stream, 
+                    request.gateway_router, 
                     quality
                 ).await?;
                 let video_subscription = video_subscription.start();

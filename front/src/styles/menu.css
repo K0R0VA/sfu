@@ -1,74 +1,58 @@
 .room-list-page {
-  flex-grow: 1;
-  overflow-y: auto; /* Разрешаем вертикальный скролл, если комнат много */
-  padding: 40px 24px;
+  width: 100%;
 }
 
 .room-list-page .container {
-  max-width: 1000px;
-  margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 32px;
+  gap: 2rem;
 }
 
-/* --- ВЕРХНЯЯ ПАНЕЛЬ: СОЗДАНИЕ КОМНАТЫ --- */
+/* Форма создания комнаты */
 .room-controls {
-  background-color: var(--bg-surface);
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  border-radius: var(--radius-lg);
-  padding: 20px;
-  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+  background: white;
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  border-radius: 0.75rem;
+  padding: 1.5rem;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
 }
 
 .create-room {
   display: flex;
-  gap: 12px;
+  gap: 1rem;
 }
 
-/* Поле ввода */
 .create-room input {
-  flex-grow: 1;
-  background-color: var(--bg-main);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: var(--radius-md);
-  padding: 14px 16px;
-  color: var(--text-main);
-  font-family: inherit;
-  font-size: 15px;
-  transition: border-color 0.2s, box-shadow 0.2s;
+  flex: 1;
+  padding: 0.75rem 1rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+  font-size: 0.95rem;
+  outline: none;
+  transition: all 0.2s ease;
 }
 
 .create-room input:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15);
 }
 
-.create-room input::placeholder {
-  color: var(--text-muted);
-}
-
-/* Кнопка создания */
+/* Кнопка создания в вашем стиле join-btn */
 .btn-primary {
-  background-color: var(--accent);
-  color: #fff;
+  padding: 0.75rem 1.5rem;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
   border: none;
-  border-radius: var(--radius-md);
-  padding: 0 24px;
-  font-size: 15px;
+  border-radius: 0.5rem;
+  font-size: 0.9rem;
   font-weight: 600;
   cursor: pointer;
-  white-space: nowrap;
-  transition: background-color 0.2s, transform 0.1s;
+  transition: all 0.2s ease;
 }
 
 .btn-primary:hover:not(:disabled) {
-  background-color: var(--accent-hover);
-}
-
-.btn-primary:active:not(:disabled) {
-  transform: scale(0.98);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px rgba(102, 126, 234, 0.3);
 }
 
 .btn-primary:disabled {
@@ -76,162 +60,111 @@
   cursor: not-allowed;
 }
 
-/* --- СЕТКА КОМНАТ --- */
+/* Сетка карточек */
 .rooms-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 20px;
+  gap: 1.5rem;
 }
 
-/* --- КАРТОЧКА КОМНАТЫ --- */
+/* Карточка комнаты в чистом светлом стиле */
 .room-card {
-  background-color: var(--bg-surface);
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  border-radius: var(--radius-lg);
+  background: white;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 0.75rem;
   cursor: pointer;
-  transition: transform 0.2s, border-color 0.2s, box-shadow 0.2s;
-  overflow: hidden;
+  transition: all 0.2s ease;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.03);
 }
 
 .room-card:hover {
-  transform: translateY(-2px);
-  border-color: rgba(59, 130, 246, 0.4);
-  box-shadow: 0 12px 20px -8px rgba(0, 0, 0, 0.4);
-}
-
-.room-card.is-active {
-  border-color: var(--accent);
-  background: linear-gradient(135deg, var(--bg-surface), rgba(59, 130, 246, 0.05));
+  transform: translateY(-4px);
+  box-shadow: 0 12px 20px rgba(0, 0, 0, 0.08);
+  border-color: #667eea;
 }
 
 .room-card-content {
   display: flex;
   align-items: center;
-  padding: 20px;
-  gap: 16px;
+  padding: 1.25rem;
+  gap: 1rem;
 }
 
 .room-icon {
-  font-size: 24px;
-  background-color: var(--bg-main);
+  font-size: 1.5rem;
+  background: #f3f4f6;
   width: 48px;
   height: 48px;
-  border-radius: var(--radius-md);
+  border-radius: 0.5rem;
   display: flex;
   align-items: center;
   justify-content: center;
-  flex-shrink: 0;
 }
 
 .room-details {
-  flex-grow: 1;
-  min-width: 0; /* Предотвращает переполнение длинным текстом */
+  flex: 1;
+  min-width: 0;
 }
 
 .room-name {
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 600;
-  color: var(--text-main);
+  color: #1f2937;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  margin-bottom: 2px;
 }
 
-.room-meta {
-  font-size: 13px;
-  color: var(--text-muted);
-}
-
-/* Кнопка «Войти» внутри карточки */
+/* Кнопка войти внутри карточки */
 .btn-join {
-  background-color: var(--bg-element);
-  color: var(--text-main);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: var(--radius-md);
-  padding: 8px 16px;
-  font-size: 13px;
+  padding: 0.5rem 1rem;
+  background: #f3f4f6;
+  color: #4b5563;
+  border: none;
+  border-radius: 0.375rem;
+  font-size: 0.85rem;
   font-weight: 600;
   cursor: pointer;
-  transition: background-color 0.2s, border-color 0.2s;
+  transition: all 0.2s ease;
 }
 
 .room-card:hover .btn-join {
-  background-color: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
 }
 
-.btn-join:hover {
-  background-color: var(--accent-hover) !important;
-}
-
-/* --- СОСТОЯНИЯ: ЗАГРУЗКА, ПУСТО, ОШИБКА --- */
-.loading-state,
-.empty-state {
-  grid-column: 1 / -1; /* Растягиваем на всю ширину сетки */
+/* Состояния пустоты и загрузки */
+.loading-state, .empty-state {
+  grid-column: 1 / -1;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  padding: 60px 20px;
+  padding: 3rem 1rem;
+  background: white;
+  border-radius: 0.75rem;
+  border: 2px dashed #e5e7eb;
   text-align: center;
-  background-color: var(--bg-surface);
-  border-radius: var(--radius-lg);
-  border: 1px dashed rgba(255, 255, 255, 0.1);
 }
 
-/* Анимация спиннера загрузки */
-.spinner {
-  width: 40px;
-  height: 40px;
-  border: 3px solid rgba(255, 255, 255, 0.1);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
-  margin-bottom: 16px;
+.empty-icon, .empty-state__icon {
+  font-size: 3rem;
+  margin-bottom: 1rem;
 }
 
-.empty-icon {
-  font-size: 48px;
-  margin-bottom: 16px;
+.loading-state p, .empty-state p, .empty-state__content p {
+  color: #6b7280;
+  font-size: 0.9rem;
+  margin-top: 0.25rem;
 }
 
-.empty-state h3 {
-  font-size: 18px;
-  font-weight: 600;
-  margin-bottom: 8px;
+.room-list-page .spinner {
+  border-color: rgba(102, 126, 234, 0.2);
+  border-top-color: #667eea;
+  width: 2rem;
+  height: 2rem;
 }
 
-.empty-state p {
-  color: var(--text-muted);
-  font-size: 14px;
-}
-
-/* Сообщение об ошибке */
-.error-message {
-  background-color: rgba(239, 68, 68, 0.1);
-  border: 1px solid rgba(239, 68, 68, 0.2);
-  color: #fca5a5;
-  padding: 14px 16px;
-  border-radius: var(--radius-md);
-  font-size: 14px;
-  text-align: center;
-  margin-top: 12px;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
-@media (max-width: 600px) {
-  .create-room {
-    flex-direction: column;
-  }
-  .btn-primary {
-    padding: 14px;
-  }
-  .rooms-grid {
-    grid-template-columns: 1fr;
-  }
+@media (max-width: 480px) {
+  .create-room { flex-direction: column; }
+  .rooms-grid { grid-template-columns: 1fr; }
 }
