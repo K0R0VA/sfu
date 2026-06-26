@@ -165,7 +165,6 @@ impl<S: SyncChannel> Actor for Publisher<S> {
         let addr = ctx.addr.clone();
         let pc = self.pc.clone();
         self.pc.on_track(Box::new(move |track, _, _| {
-            tracing::info!("Receive new track");
             let pc = pc.clone();
             let addr = addr.clone();
             let ssrc = track.ssrc();

@@ -61,7 +61,6 @@
 <script setup>
 import { ref, onMounted, onUnmounted, inject } from 'vue';
 import { useRouter } from 'vue-router';
-import { connect_websocket } from '../scripts/index.js';
 import { HttpClient } from '../scripts/http_client.js'
 
 const router = useRouter();
@@ -90,7 +89,7 @@ const fetchRooms = async () => {
 
 // Создание комнаты
 const createRoom = async () => {
-  const name = newRoomName.value.trim();
+  const name = newRoomName.value;
   if (!name) {
     error.value = 'Введите название комнаты';
     return;

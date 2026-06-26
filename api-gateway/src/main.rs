@@ -70,11 +70,14 @@ async fn create_room(
     State(server): State<Addr<Server<WebsocketSync>>>,
     Json(CreateRoomRequest { name }): Json<CreateRoomRequest>,
 ) -> Response {
-    let room_id = match server.create_room(name).await {
-        Ok((room_id, _)) => CreateRoomResponse { id: room_id },
+    let result = server
+        .create_room(name).await
+        .and_then(|(room_id, _)| Ok(serde_json::to_string(&CreateRoomResponse { id: room_id })?));
+    let json = match result {
+        Ok(json) => json,
         Err(e) => return Response::new(e.to_string().into())
     };
-    Response::new(serde_json::to_string(&room_id).unwrap().into())
+    Response::new(json.into())
 }
 
 
@@ -102,16 +105,12 @@ async fn try_connect_websocket(
     addr.add_stream(ws_rx, |msg| {
         let message = match msg {
             Ok(Message::Text(text)) => {
-                let message = match serde_json::from_slice(text.as_bytes()) {
-                    Ok(msg) => msg,
-                    Err(e) => {
-                        tracing::error!("Failed parse websocket message {e}");
-                        return actor::StreamItem::Close
-                    }
-                };
-                SyncMessage::Message(message)
+                match serde_json::from_slice(text.as_bytes()) {
+                    Ok(msg) => SyncMessage::Message(msg),
+                    Err(e) => SyncMessage::Error(e.to_string()) 
+                }
             },
-            Ok(Message::Close(_) ) => SyncMessage::Close,
+            Ok(Message::Close(_) ) => return actor::StreamItem::Next(UserMessage::SyncMessage(SyncMessage::Close)) ,
             Err(e) => SyncMessage::Error(e.to_string()),
             _ => return actor::StreamItem::Skip
         };

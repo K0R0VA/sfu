@@ -153,12 +153,12 @@ pub enum Target {
 
 impl<S: SyncChannel> User<S> {
     async fn initiate(&mut self, ctx: &Ctx<'_, Self>) -> Result<(), Error> {
-        self.send_welcome().await?;
         let addr = ctx.addr.clone();
         let subscriber = Subscriber::new(addr.clone()).await?.start();
         self.subscriber.set_addr(subscriber);
         let publisher = Publisher::new(addr.clone(), self.room.clone(), self.peer_id).await?.start();
         self.publisher.set_addr(publisher);
+        self.send_welcome().await?;
         Ok(())
     }
     async fn send_welcome(&mut self) -> Result<(), Error> {

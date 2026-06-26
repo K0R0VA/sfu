@@ -30,7 +30,6 @@ impl VideoPacketForwarder {
             last_packet_received: None,
             key_frame_buffer: VecDeque::new(),
             frame_delta: 0,
-            // Стартуем в режиме ожидания первого ключевого кадра
             is_layer_switching: false, 
             current_quality: None,
             current_channel: None,
@@ -117,7 +116,7 @@ impl VideoPacketForwarder {
         Ok(())
     }
     fn update_frame_delta(&mut self, timestamp: u32) {
-        let gap = timestamp - self.last_timestamp;
+        let gap = timestamp.wrapping_sub(self.last_timestamp);
         self.frame_delta = if gap == 0 { self.frame_delta } else { gap }
     }
     fn update_offsets_on_layer_switch(&mut self, timestamp: u32) {
@@ -125,7 +124,7 @@ impl VideoPacketForwarder {
         self.timestamp_offset = expected_new_ts as i64 - timestamp as i64;
     }
     fn apply_offsets(&mut self, packet: &mut Packet) {
-        self.last_sequence_number += 1;
+        self.last_sequence_number = self.last_sequence_number.wrapping_add(1);
         packet.header.sequence_number = self.last_sequence_number;
         packet.header.timestamp = (packet.header.timestamp as i64 + self.timestamp_offset) as u32;
         self.update_frame_delta(packet.header.timestamp);

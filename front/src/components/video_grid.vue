@@ -6,7 +6,6 @@
       <p>Нажмите «Войти», чтобы начать трансляцию</p>
     </div>
   </div>
-
   <div v-else class="video-grid">
     <VideoCard 
       v-for="peer in users" 

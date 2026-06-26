@@ -1,10 +1,10 @@
-import { PeerConnection, getDeviceType } from "./webrtc";
+import { WebrtcConnection, getDeviceType } from "./webrtc";
 
 export class UserWebsocket {
     constructor(users, room_id, room_status, room_name) {
         console.log('connect webscocket');
         this.ws = createWebSocket(room_id.value);
-        this.peer_connection = new PeerConnection(users, room_status, this.ws);
+        this.peer_connection = new WebrtcConnection(users, room_status, this.ws);
         this.room_status = room_status;
         this.room_name = room_name;
         this.users = users;
@@ -24,14 +24,14 @@ export class UserWebsocket {
                 case 'welcome': {
                     this.peer_id = message.peer_id;
                     this.room_status.value = "Получение медиапотока...";
-                    const video_stream = await navigator.mediaDevices.getUserMedia({ 
+                    const video_stream = await this.getMedia({ 
                         video: {
                             width: { ideal: 1280 },
                             height: { ideal: 720 },
                             frameRate: { ideal: 30 }
                         }
                     });
-                    const audio_stream = await navigator.mediaDevices.getUserMedia({
+                    const audio_stream = await this.getMedia({
                         audio: {
                             echoCancellation: true,        // Подавление эха (критически важно!)
                             noiseSuppression: true,        // Подавление шума
@@ -87,6 +87,18 @@ export class UserWebsocket {
             this.isConnecting.value = false;
             this.room_status.value = "Соединение потеряно";
         };
+    }
+    async getMedia(request) {
+        let video_stream;
+        try {
+            video_stream = await navigator.mediaDevices.getUserMedia(request);
+        }
+        catch {
+            this.room_status.value = 'Ошибка получения медиа потока';
+        }
+        finally {
+            return video_stream
+        }
     }
     disconnect() {
         try {

@@ -13,7 +13,7 @@ export class HttpClient {
         const rooms = await response.json();
         return rooms;
     }
-    async create_room() {
+    async create_room(name) {
         const response = await fetch(`${this.domain}/room`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },

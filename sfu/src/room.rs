@@ -6,14 +6,12 @@ use crate::{SyncChannel, actor::{Actor, Addr, Ctx}, audio_packet_forwarder::Audi
 
 pub struct Room<S: SyncChannel> {
     pub id: Uuid,
-    server: Addr<Server<S>>,
     peers: HashMap<Uuid, Peer<S>>
 }
 
 impl<S: SyncChannel>  Room<S> {
     pub fn new(server: Addr<Server<S>>) -> Self {
         Self {
-            server,
             id: Uuid::new_v4(),
             peers: HashMap::new()
         }

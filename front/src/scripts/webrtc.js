@@ -1,4 +1,4 @@
-export class PeerConnection {
+export class WebrtcConnection {
     constructor(users, room_status, ws) {
         let config = { 
             iceServers: [
@@ -94,53 +94,57 @@ export class PeerConnection {
         }));
     }
     async add_tracks(video_stream, audio_stream) {
-        console.log('add tracks');
-        const deviceType = getDeviceType();
-        const isMobile = deviceType === 'mobile';
+        let is_any_stream = video_stream || audio_stream;
+        if (video_stream) {
+            const deviceType = getDeviceType();
+            const isMobile = deviceType === 'mobile';
+            const bitrateSettings = isMobile ? {
+                low: 75_000,      
+                mid: 175_000,    
+                high: 350_000     
+            } : {
+                low: 150_000,
+                mid: 350_000,
+                high: 700_000
+            };
+            const encodings = [
+                {
+                    rid: 'low',
+                    maxBitrate: bitrateSettings.low,
+                    scaleResolutionDownBy: getRoundedResolution(BASE_HEIGHT, BASE_WIDTH, 4.0),
+                },
+                {
+                    rid: 'mid',
+                    maxBitrate: bitrateSettings.mid,
+                    scaleResolutionDownBy: getRoundedResolution(BASE_HEIGHT, BASE_WIDTH, 2.0),
+                },
+                {
+                    rid: 'high',
+                    maxBitrate: bitrateSettings.high,
+                    scaleResolutionDownBy: 1.0,
+                }
+            ];
+            const video_track = video_stream.getVideoTracks()[0];
+            this.publisher_pc.addTransceiver(video_track, {
+                direction: 'sendonly',
+                sendEncodings: encodings
+            });
+        }
+        if (audio_stream) {
+            const audio_track = audio_stream.getAudioTracks()[0];
+            this.publisher_pc.addTransceiver(audio_track, { direction: 'sendonly' });
+        }
+        if (is_any_stream) {
+            let offer = await this.publisher_pc.createOffer();
+            await this.publisher_pc.setLocalDescription(offer);
+            this.ws.send(JSON.stringify({
+                kind: "rtc",
+                target: "publisher",
+                type: "offer",
+                sdp: offer.sdp
+            }));
+        }
         
-        // Настройки битрейта в зависимости от устройства
-        const bitrateSettings = isMobile ? {
-            low: 75_000,      
-            mid: 175_000,    
-            high: 350_000     
-        } : {
-            low: 150_000,
-            mid: 350_000,
-            high: 700_000
-        };
-        
-        const encodings = [
-            {
-                rid: 'low',
-                maxBitrate: bitrateSettings.low,
-                scaleResolutionDownBy: getRoundedResolution(BASE_HEIGHT, BASE_WIDTH, 4.0),
-            },
-            {
-                rid: 'mid',
-                maxBitrate: bitrateSettings.mid,
-                scaleResolutionDownBy: getRoundedResolution(BASE_HEIGHT, BASE_WIDTH, 2.0),
-            },
-            {
-                rid: 'high',
-                maxBitrate: bitrateSettings.high,
-                scaleResolutionDownBy: 1.0,
-            }
-        ];
-        const video_track = video_stream.getVideoTracks()[0];
-        this.publisher_pc.addTransceiver(video_track, {
-            direction: 'sendonly',
-            sendEncodings: encodings
-        });
-        const audio_track = audio_stream.getAudioTracks()[0];
-        this.publisher_pc.addTransceiver(audio_track, { direction: 'sendonly' });
-        let offer = await this.publisher_pc.createOffer();
-        await this.publisher_pc.setLocalDescription(offer);
-        this.ws.send(JSON.stringify({
-            kind: "rtc",
-            target: "publisher",
-            type: "offer",
-            sdp: offer.sdp
-        }));
     }
     async receive_answer(message) {
         if (this.publisher_pc.signalingState === "have-local-offer") {
