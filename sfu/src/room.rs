@@ -2,7 +2,7 @@ use std::{collections::HashMap, fmt::{Display}, str::FromStr};
 use uuid::Uuid;
 use webrtc::rtp::packet::Packet;
 
-use crate::{SyncChannel, actor::{Actor, Addr, Ctx}, audio_packet_forwarder::AudioPacketForwarder, error::Error, rtp_packet_forwarder::RtpPacketGatewayRouter, server::Server, user::{ConnectionRequest, User, UserMessage}, video_packet_forwarder::VideoPacketForwarder};
+use crate::{SyncChannel, actor::{Actor, Addr, Ctx}, audio_packet_forwarder::AudioPacketForwarder, error::Error, keyframe_interceptor::{  KeyframeInterceptor}, rtp_packet_forwarder::RtpPacketGatewayRouter, server::Server, user::{ConnectionRequest, User, UserMessage}, video_packet_forwarder::VideoPacketForwarder};
 
 pub struct Room<S: SyncChannel> {
     pub id: Uuid,
@@ -10,7 +10,7 @@ pub struct Room<S: SyncChannel> {
 }
 
 impl<S: SyncChannel>  Room<S> {
-    pub fn new(server: Addr<Server<S>>) -> Self {
+    pub fn new(_server: Addr<Server<S>>) -> Self {
         Self {
             id: Uuid::new_v4(),
             peers: HashMap::new()
@@ -20,7 +20,7 @@ impl<S: SyncChannel>  Room<S> {
 
 pub struct Peer<S: SyncChannel> {
     pub user: Addr<User<S>>,
-    pub video_tracks: HashMap<StreamQuality, PeerTrack<VideoPacketForwarder>>,
+    pub video_tracks: HashMap<StreamQuality, (PeerTrack<VideoPacketForwarder>, Addr<KeyframeInterceptor>)>,
     pub audio_track: Option<PeerTrack<AudioPacketForwarder>>
 }
 
@@ -28,8 +28,8 @@ impl<S: SyncChannel> Peer<S> {
     fn add_audio_track(&mut self, stream: PeerTrack<AudioPacketForwarder>) {
         self.audio_track = Some(stream);
     }
-    fn add_stream_track(&mut self, quality: StreamQuality, stream: PeerTrack<VideoPacketForwarder>) {
-        self.video_tracks.insert(quality, stream);
+    fn add_stream_track(&mut self, quality: StreamQuality, stream: PeerTrack<VideoPacketForwarder>, keyframe_interceptor: Addr<KeyframeInterceptor>) {
+        self.video_tracks.insert(quality, (stream, keyframe_interceptor));
     }
 }
 
@@ -109,6 +109,7 @@ pub enum RoomMessage<S: SyncChannel> {
     AddVideoTrack {
         peer_id: Uuid,
         track: PeerTrack<VideoPacketForwarder>,
+        keyframe_interceptor: Addr<KeyframeInterceptor>,
         quality: StreamQuality
     },
     // Выход пользователя
@@ -133,11 +134,11 @@ impl<S: SyncChannel> Actor for Room<S> {
                 let peer = self.peers.get_mut(&peer_id).unwrap();
                 peer.add_audio_track(stream);
             },
-            RoomMessage::AddVideoTrack { peer_id, track: mut stream, quality } => {
+            RoomMessage::AddVideoTrack { peer_id, track: mut stream, keyframe_interceptor, quality } => {
                 tracing::info!("[RoomActor] AddVideoTrack");
-                self.connect_new_video_stream(peer_id, quality, &mut stream).await;
+                self.connect_new_video_stream(peer_id, quality, &mut stream, keyframe_interceptor.clone()).await;
                 let peer = self.peers.get_mut(&peer_id).unwrap();
-                peer.add_stream_track(quality, stream);
+                peer.add_stream_track(quality, stream, keyframe_interceptor);
             }
             RoomMessage::Leave { peer_id } => {
                 tracing::info!("❌ [RoomActor] Участник {} вышел из комнаты", peer_id);
@@ -172,18 +173,19 @@ impl<S: SyncChannel> Room<S> {
             })).await;
         }
     }
-    async fn connect_new_video_stream(&mut self, peer_id: Uuid, quality: StreamQuality, stream: &mut PeerTrack<VideoPacketForwarder>) {
+    async fn connect_new_video_stream(&mut self, peer_id: Uuid, quality: StreamQuality, stream: &mut PeerTrack<VideoPacketForwarder>, keyframe_interceptor: Addr<KeyframeInterceptor>) {
         let peers = self.peers.iter()
             .filter(|(id, _)| **id != peer_id);
         for (_, peer) in peers {
             let Peer { user, .. } = peer;
-            let _ = user.send(UserMessage::ConnectVideo{ 
+            let _ = user.send(UserMessage::ConnectVideo { 
                 quality, 
                 request: ConnectionRequest { 
                     peer_id, 
                     gateway_router: stream.gateway_router.clone(), 
-                    codec_mime_type: stream.mime_type.clone()
-                }
+                    codec_mime_type: stream.mime_type.clone(),
+                },
+                keyframe_interceptor: keyframe_interceptor.clone()
             }).await;
         }
     }
@@ -199,9 +201,10 @@ impl<S: SyncChannel> Room<S> {
                     gateway_router: audio_stream.gateway_router.clone()
                 })).await;
             }
-            for (quaity, video_stream) in video_streams {
+            for (quality, (video_stream, keyframe_interceptor)) in video_streams {
                 let _ = user.send(UserMessage::ConnectVideo {
-                    quality: *quaity,
+                    quality: *quality,
+                    keyframe_interceptor: keyframe_interceptor.clone(),
                     request: ConnectionRequest {
                         codec_mime_type: video_stream.mime_type.clone(),
                         peer_id: *existed_peer_id,

@@ -1,8 +1,10 @@
-use std::{fmt::Debug, hash::Hash, sync::Arc};
+use std::{fmt::Debug, hash::Hash, marker::PhantomData, sync::Arc};
 
 use futures_util::StreamExt;
-use tokio::{sync::{Mutex, mpsc::error::{SendError, TrySendError}}, task::AbortHandle};
+use tokio::{sync::{Mutex}, task::AbortHandle};
 use uuid::Uuid;
+
+use crate::error;
 
 pub trait Actor: Sized + Send + 'static {
     type Message: Sized + Send + 'static;
@@ -19,6 +21,23 @@ pub trait Actor: Sized + Send + 'static {
     }
     fn start_with_capacity(self, capacity: usize) -> Addr<Self> {
         Addr::spawn(self, capacity)
+    }
+}
+
+pub trait StoppingExt<T> {
+    fn ok_or_terminate<A: Actor>(self, ctx: &mut Ctx<'_, A>) -> Option<T>;
+}
+
+impl<T> StoppingExt<T> for Result<T, crate::Error> {
+    fn ok_or_terminate<A: Actor>(self, ctx: &mut Ctx<'_, A>) -> Option<T> {
+        match self {
+            Ok(t) => Some(t),
+            Err(e) => {
+                tracing::error!("[{:?}] {e}", PhantomData::<A>::default());
+                ctx.should_stop = true;
+                None
+            }
+        }
     }
 }
 
@@ -90,17 +109,18 @@ impl<A: Actor> Addr<A> {
         });
         addr
     }
-    pub async fn terminate(&self) {
+    pub async fn terminate(&self) -> Result<(), crate::Error> {
         if let Some(terminate_call) = self.terminate_call.lock().await.take() {
-            let _ = terminate_call.send(());
+            terminate_call.send(()).map_err(|_| error::Error::ChannelClosed)?;
         }
-    }
-    pub async fn send(&self, m: <A as Actor>::Message) -> Result<(), SendError<<A as Actor>::Message>> {
-        self.requests.send(m).await?;
         Ok(())
     }
-     pub fn do_send(&self, m: <A as Actor>::Message) -> Result<(), TrySendError<<A as Actor>::Message>> {
-        self.requests.try_send(m)?;
+    pub async fn send(&self, m: <A as Actor>::Message) -> Result<(), crate::Error> {
+        self.requests.send(m).await.map_err(|_| error::Error::ChannelClosed)?;
+        Ok(())
+    }
+     pub fn do_send(&self, m: <A as Actor>::Message) -> Result<(), crate::Error> {
+        self.requests.try_send(m).map_err(|_| error::Error::ChannelClosed)?;
         Ok(())
     }
     pub fn add_stream<S, F>(&self, mut stream: S, mapper: F) -> AbortHandle
@@ -141,15 +161,17 @@ impl<A: Actor> WeakAddr<A> {
     pub fn set_addr(&mut self, addr: Addr<A>) {
         let _ = self.addr.insert(addr);
     } 
-    pub async fn try_send(&self, m: A::Message) {
+    pub async fn try_send(&self, m: A::Message) -> Result<(), crate::Error> {
         if let Some(addr) = &self.addr {
-            let _ = addr.send(m).await;
+            addr.send(m).await?;
         }
+        Ok(())
     }
-    pub async fn try_terminate(&self) {
+    pub async fn try_terminate(&self)  -> Result<(), crate::Error> {
         if let Some(addr) = &self.addr {
-            let _ = addr.terminate().await;
+            addr.terminate().await?;
         }
+        Ok(())
     }
 }
 

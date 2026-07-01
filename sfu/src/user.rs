@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use webrtc::{peer_connection::{RTCPeerConnection, offer_answer_options::RTCOfferOptions, }, rtp::packet::Packet, };
-use crate::{SyncChannel, actor::{Actor, Addr, Ctx, WeakAddr}, audio_packet_forwarder::AudioPacketForwarder, error::Error, publisher_pc::{Publisher, PublisherMessage}, quality_monitor::DeviceType, room::{MimeType, Room, RoomMessage, StreamQuality}, rtp_packet_forwarder::RtpPacketGatewayRouter, subscriber_pc::{Subscriber, SubscriberMessage}, video_packet_forwarder::VideoPacketForwarder};
+use crate::{SyncChannel, actor::{Actor, Addr, Ctx, WeakAddr}, audio_packet_forwarder::AudioPacketForwarder, error::Error, keyframe_interceptor::KeyframeInterceptor, publisher_pc::{Publisher, PublisherMessage}, quality_monitor::DeviceType, room::{MimeType, Room, RoomMessage, StreamQuality}, rtp_packet_forwarder::RtpPacketGatewayRouter, subscriber_pc::{Subscriber, SubscriberMessage}, video_packet_forwarder::VideoPacketForwarder};
 
 pub struct User<S: SyncChannel> {
     pub room: Addr<Room<S>>,
@@ -29,7 +29,7 @@ pub enum UserMessage {
     SwitchQualityLayer { quality: StreamQuality },
     SyncMessage(SyncMessage),
     ConnectAudio(ConnectionRequest<AudioPacketForwarder>),
-    ConnectVideo { request: ConnectionRequest<VideoPacketForwarder>, quality: StreamQuality },
+    ConnectVideo { request: ConnectionRequest<VideoPacketForwarder>, quality: StreamQuality , keyframe_interceptor: Addr<KeyframeInterceptor>},
     Unsubscribe {
         user_id: Uuid,
     },
@@ -76,8 +76,8 @@ impl<S: SyncChannel> Actor for User<S> {
             UserMessage::ConnectAudio(request) => {
                 let _ = self.subscriber.try_send(SubscriberMessage::ConnectAudio(request)).await;
             },
-            UserMessage::ConnectVideo {quality, request} => {
-                let _ = self.subscriber.try_send(SubscriberMessage::ConnectVideo {quality, request}).await;
+            UserMessage::ConnectVideo {quality, request, keyframe_interceptor} => {
+                let _ = self.subscriber.try_send(SubscriberMessage::ConnectVideo {quality, request, keyframe_interceptor}).await;
             },
             UserMessage::RoomClosed => self.stop(ctx).await,
             UserMessage::Unsubscribe { user_id: speaker_id } => {
@@ -96,8 +96,8 @@ impl<S: SyncChannel> Actor for User<S> {
         tracing::info!("🟢 [Userctor] Пользователь инициализирован.");
     }
     async fn stopping(self, _: &Ctx<'_, Self>) {
-        self.subscriber.try_terminate().await;
-        self.publisher.try_terminate().await;
+        self.subscriber.try_terminate().await.ok();
+        self.publisher.try_terminate().await.ok();
         let _ = self.room.send(RoomMessage::Leave { peer_id: self.peer_id.clone() }).await;
         tracing::info!("🔴 [UserActor] Пользователь уничтожен.");
     }

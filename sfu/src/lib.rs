@@ -7,7 +7,7 @@ pub mod quality_monitor;
 pub mod video_packet_forwarder;
 pub mod audio_subscription;
 pub mod audio_packet_forwarder;
-pub mod pli_sender;
+pub mod keyframe_interceptor;
 pub mod rtp_packet_forwarder;
 pub mod subscriber_pc;
 pub mod publisher_pc;

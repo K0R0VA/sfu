@@ -1,23 +1,25 @@
 use std::{collections::HashSet, marker::PhantomData, sync::{Arc}};
-use webrtc::{rtp::packet::Packet, track::{track_remote::TrackRemote}};
-use crate::{actor::{Actor, Addr}, pli_sender::{Ping, PliSender}, room::StreamQuality,};
+use webrtc::{peer_connection::RTCPeerConnection, rtcp::payload_feedbacks::full_intra_request::{FirEntry, FullIntraRequest}, rtp::packet::Packet, track::track_remote::TrackRemote};
+use crate::{actor::{Actor, Addr, StoppingExt}, error::Error, room::StreamQuality,};
 
 pub struct RtpPacketGatewayRouter<A: Actor> {
     pub subscriptions: HashSet<Addr<A>>,
     pub stream_quality: StreamQuality,
-    pub pli_sender: Option<Addr<PliSender>,>
+    pub pc: Arc<RTCPeerConnection>,
+    pub ssrc: u32,
+    pub fir_sequence: u8,
 }
 
 impl<A: Actor> RtpPacketGatewayRouter<A> where A::Message: From<(StreamQuality, Packet)>  {
-    pub fn spawn(track: Arc<TrackRemote>, stream_quality: StreamQuality, pli_sender: Option<Addr<PliSender>>) -> Addr<Self> {
-        let this: Addr<RtpPacketGatewayRouter<A>> = Self {subscriptions: HashSet::new(), stream_quality, pli_sender}
+    pub fn spawn(track: Arc<TrackRemote>, stream_quality: StreamQuality, ssrc: u32, pc: Arc<RTCPeerConnection>) -> Addr<Self> {
+        let this: Addr<RtpPacketGatewayRouter<A>> = Self {subscriptions: HashSet::new(), ssrc, stream_quality, pc, fir_sequence: 0}
             .start_with_capacity(2048);
         let receiver = this.clone();
         tokio::spawn(async move {
             loop {
                 let Ok((packet, _)) = track.read_rtp().await
                     .map_err(|e| tracing::error!("[RtpPacketGatewayRouter] read_rtp {e}")) else { 
-                        receiver.terminate().await;
+                        let _ = receiver.terminate().await;
                         break;
                     };
                 let Ok(_) = receiver.do_send(RtpPacketGatewayRouterMessage::RtpPacket(packet))
@@ -27,13 +29,24 @@ impl<A: Actor> RtpPacketGatewayRouter<A> where A::Message: From<(StreamQuality, 
         });
         this
     }
+    pub async fn add_subscriber(&mut self, sub: Addr<A>) -> Result<(), Error> {
+        self.subscriptions.insert(sub);
+        self.pc.write_rtcp(&[Box::new(FullIntraRequest {
+            media_ssrc: self.ssrc,
+            sender_ssrc: 0,
+            fir: [
+                FirEntry { ssrc: self.ssrc, sequence_number: self.fir_sequence }
+            ].to_vec()
+        })]).await?;
+        self.fir_sequence = self.fir_sequence.wrapping_add(1);
+        Ok(())
+    } 
 }
 
 pub enum RtpPacketGatewayRouterMessage<A: Actor> {
     RtpPacket (Packet),
     Subscribe (Addr<A>),
     Unsubscribe (Addr<A>),
-    ForcePli
 }
 
 
@@ -43,20 +56,16 @@ impl<A: Actor> Actor for RtpPacketGatewayRouter<A>
     async fn starting(&mut self, _ctx: &crate::actor::Ctx<'_, Self>) {
         tracing::info!("[RtpPacketForwarder] Starting");
     }
-    async fn handle(&mut self, _ctx: &mut crate::actor::Ctx<'_, Self>, msg: Self::Message) {
+    async fn handle(&mut self, ctx: &mut crate::actor::Ctx<'_, Self>, msg: Self::Message) {
         match msg {
-            RtpPacketGatewayRouterMessage::ForcePli => if let Some(pli_sender) = &self.pli_sender {
-                let _ = pli_sender.send(Ping).await;
-            }
             RtpPacketGatewayRouterMessage::Subscribe(sub) => { 
                 tracing::info!("[RtpPacketForwarder] Subscribe {:?}", PhantomData::<A>::default());
-                self.subscriptions.insert(sub);
-                if let Some(pli_sender) = &self.pli_sender {
-                    let _ = pli_sender.send(Ping).await;
-                }
+                self.add_subscriber(sub).await.ok_or_terminate(ctx);
             },
             RtpPacketGatewayRouterMessage::RtpPacket(packet) => {
-                self.subscriptions.iter().for_each(|sub|{ let _ = sub.do_send((self.stream_quality, packet.clone()).into()); });
+                for sub in &self.subscriptions {
+                    sub.do_send((self.stream_quality, packet.clone()).into()).ok_or_terminate(ctx);
+                }
             },
             RtpPacketGatewayRouterMessage::Unsubscribe(sub) => {
                 self.subscriptions.remove(&sub);

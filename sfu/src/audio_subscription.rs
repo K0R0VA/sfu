@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    SyncChannel, actor::{Actor, Addr}, audio_packet_forwarder::AudioPacketForwarder, error::Error, rtp_packet_forwarder::{self, RtpPacketGatewayRouter, RtpPacketGatewayRouterMessage}, user::{ConnectionRequest, User, UserMessage},
+    SyncChannel, actor::{Actor, Addr, StoppingExt}, audio_packet_forwarder::AudioPacketForwarder, error::Error, rtp_packet_forwarder::{ RtpPacketGatewayRouter, RtpPacketGatewayRouterMessage}, user::{ConnectionRequest, User, UserMessage},
 };
 use uuid::Uuid;
 use webrtc::{
@@ -37,7 +37,7 @@ impl<S: SyncChannel> AudioSubscription<S> {
             format!("audio_{peer_id}"),
             format!("audio_{peer_id}")
         ));
-        let sender = pc
+        let tranceiver = pc
             .add_transceiver_from_track(
                 output_track.clone() as Arc<_>,
                 Some(RTCRtpTransceiverInit {
@@ -45,14 +45,13 @@ impl<S: SyncChannel> AudioSubscription<S> {
                     send_encodings: vec![],
                 }),
             )
-            .await?
-            .sender()
-            .await;
+            .await?;
+        let sender = tranceiver.sender().await;
         let forwarder = AudioPacketForwarder { track: output_track.clone() }
             .start_with_capacity(256);
-        let _ = gateway_router
+        gateway_router
             .send(RtpPacketGatewayRouterMessage::Subscribe(forwarder.clone()))
-            .await;
+            .await?;
         Ok(Self {
             sender,
             pc,
@@ -61,6 +60,15 @@ impl<S: SyncChannel> AudioSubscription<S> {
             forwarder,
             gateway_router
         })
+    }
+    async fn try_stop(self) -> Result<(), Error> {
+        self
+            .gateway_router
+            .send(RtpPacketGatewayRouterMessage::Unsubscribe(self.forwarder.clone()))
+            .await?;
+        self.forwarder.terminate().await?;
+        self.pc.remove_track(&self.sender).await?;
+        Ok(())
     }
 }
 
@@ -74,18 +82,13 @@ impl<S: SyncChannel> Actor for AudioSubscription<S> {
     async fn starting(&mut self, _ctx: &crate::actor::Ctx<'_, Self>) {
         tracing::info!("[AudioSubscription] starting");
     }
-    async fn handle(&mut self, _ctx: &mut crate::actor::Ctx<'_, Self>, m: Self::Message) {
+    async fn handle(&mut self, ctx: &mut crate::actor::Ctx<'_, Self>, m: Self::Message) {
         if let Close::StreamForwardFail = m {
-            let _ = self.user_addr.send(UserMessage::Unsubscribe { user_id: self.peer_id }).await;
+            self.user_addr.send(UserMessage::Unsubscribe { user_id: self.peer_id }).await.ok_or_terminate(ctx);
         }
     }
     async fn stopping(self, _ctx: &crate::actor::Ctx<'_, Self>) {
-        let _ = self
-            .gateway_router
-            .send(RtpPacketGatewayRouterMessage::Unsubscribe(self.forwarder.clone()))
-            .await;
-        self.forwarder.terminate().await;
-        if let Err(e) = self.pc.remove_track(&self.sender).await {
+        if let Err(e) = self.try_stop().await {
             tracing::error!("[AudioSubscription] remove_track failed {e}");
         }
     }

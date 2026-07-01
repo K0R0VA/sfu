@@ -89,7 +89,7 @@ async fn try_connect_websocket(
     let (ws_tx, ws_rx) = ws.split();
     let mut sync_channel = WebsocketSync {socket: ws_tx};
     let (tx, rx) = tokio::sync::oneshot::channel();
-    let _ = server.send(ServerMessage::GetRoomAddr { room_id, response_channel: tx }).await;
+    server.send(ServerMessage::GetRoomAddr { room_id, response_channel: tx }).await?;
     let (room_name, room) = match rx.await? {
         Some(room) => room,
         None => {
@@ -116,7 +116,7 @@ async fn try_connect_websocket(
         };
         actor::StreamItem::Next(UserMessage::SyncMessage(message)) 
     });
-    let _ = server.send(ServerMessage::JoinRoom { room_id, user_id, addr }).await;
+    server.send(ServerMessage::JoinRoom { room_id, user_id, addr }).await?;
     Ok(())
 }
 

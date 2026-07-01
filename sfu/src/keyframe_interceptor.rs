@@ -4,13 +4,13 @@ use webrtc::{peer_connection::RTCPeerConnection, rtcp::payload_feedbacks::pictur
 
 use crate::actor::Actor;
 
-pub struct PliSender {
+pub struct KeyframeInterceptor {
     pc: Arc<RTCPeerConnection>,
     ssrc: u32,
     instant: Instant,
 }
 
-impl PliSender {
+impl KeyframeInterceptor {
     pub fn new(pc: Arc<RTCPeerConnection>, ssrc: u32) -> Self {
         let instant = Instant::now() - Duration::from_secs(6);
         Self {
@@ -21,10 +21,10 @@ impl PliSender {
     }
 }
 
-pub struct Ping;
+pub struct RequestKeyframe;
 
-impl Actor for PliSender {
-    type Message = Ping;
+impl Actor for KeyframeInterceptor {
+    type Message = RequestKeyframe;
     async fn starting(&mut self, _ctx: &crate::actor::Ctx<'_, Self>) {
         tracing::info!("[PliSender] starting");
     }

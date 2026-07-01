@@ -4,7 +4,7 @@ export class HttpClient {
         if (serverIP === 'localhost') {
             this.domain = `http://${serverIP}:8080/api`;
         } else {
-            this.domain = `http://${serverIP}/api`;
+            this.domain = `https://${serverIP}/api`;
         }
     }
     async get_rooms() {

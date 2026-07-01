@@ -2,20 +2,31 @@ use std::{collections::{BTreeMap}, sync::Arc, time::Duration};
 use uuid::Uuid;
 use webrtc::{peer_connection::RTCPeerConnection, rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication, rtp_transceiver::{RTCRtpTransceiverInit, rtp_codec::RTCRtpCodecCapability, rtp_sender::RTCRtpSender, rtp_transceiver_direction::RTCRtpTransceiverDirection}, track::track_local::{track_local_static_rtp::TrackLocalStaticRTP}};
 
-use crate::{actor::{Actor, Addr}, error::Error, room::{MimeType, StreamQuality}, rtp_packet_forwarder::{RtpPacketGatewayRouter, RtpPacketGatewayRouterMessage}, video_packet_forwarder::{VideoPacketForwarder, VideoPacketForwarderMessage}};
+use crate::{actor::{Actor, Addr, StoppingExt}, error::Error, keyframe_interceptor::{KeyframeInterceptor, RequestKeyframe}, room::{MimeType, StreamQuality}, rtp_packet_forwarder::{RtpPacketGatewayRouter}, video_packet_forwarder::{VideoPacketForwarder, VideoPacketForwarderMessage}};
 
 pub struct VideoSubscription {
     pub pc: Arc<RTCPeerConnection>,
     pub peer_id: Uuid,
-    pub quality_layers: BTreeMap<StreamQuality, Addr<RtpPacketGatewayRouter<VideoPacketForwarder>>>,
+    pub quality_layers: BTreeMap<StreamQuality, QualityLayer>,
     pub active_track: Arc<RTCRtpSender>,
     pub packet_forwarder: Addr<VideoPacketForwarder>,
     pub active_quality: StreamQuality,
     pub waiting_high_quality: bool,
 }
+#[derive(Clone)]
+pub struct QualityLayer {
+    pub gateway_router: Addr<RtpPacketGatewayRouter<VideoPacketForwarder>>,
+    pub keyframe_interceptor: Addr<KeyframeInterceptor>
+}
 
 impl VideoSubscription {
-    pub async fn new(pc: Arc<RTCPeerConnection>, peer_id: Uuid, mime_type: MimeType, gateway_router: Addr<RtpPacketGatewayRouter<VideoPacketForwarder>>, quality: StreamQuality) -> Result<Self, Error> {
+    pub async fn new(
+        pc: Arc<RTCPeerConnection>, 
+        peer_id: Uuid, 
+        mime_type: MimeType, 
+        quality: StreamQuality,
+        quality_layer: QualityLayer,
+    ) -> Result<Self, Error> {
         let mut quality_layers = BTreeMap::new();
         let track: Arc<TrackLocalStaticRTP> = Arc::new(TrackLocalStaticRTP::new(
             RTCRtpCodecCapability {
@@ -34,14 +45,14 @@ impl VideoSubscription {
             .await;
         let packet_forwarder = VideoPacketForwarder::new(track.clone(), mime_type)
             .start_with_capacity(2048);
-        quality_layers.insert(quality, gateway_router.clone());
+        quality_layers.insert(quality, quality_layer);
         let this = Self { pc, peer_id, quality_layers, active_track, active_quality: quality, packet_forwarder, waiting_high_quality: quality == StreamQuality::Low  };
         Ok(this) 
     }
 }
 
 pub enum VideoSubscriptionMessage {
-    AddSubsription { quality: StreamQuality, gateway_router: Addr<RtpPacketGatewayRouter<VideoPacketForwarder>> },
+    AddSubsription { quality: StreamQuality, layer: QualityLayer },
     SwitchQualityLayer { to: StreamQuality },
     StartLowQuality,
     Drop,
@@ -55,34 +66,38 @@ impl Actor for VideoSubscription {
     async fn handle(&mut self, ctx: &mut crate::actor::Ctx<'_, Self>, m: Self::Message) {
         match m {
             VideoSubscriptionMessage::StartLowQuality => if self.waiting_high_quality {
-                let Some((quality , gateway_router)) = self.quality_layers.iter().next() else { return; };
+                let Some((quality , quality_layer)) = self.quality_layers.iter().next() else { return; };
                 self.waiting_high_quality = false;
-                let _ = self.packet_forwarder.send(VideoPacketForwarderMessage::Start {
+                self.packet_forwarder.send(VideoPacketForwarderMessage::Start {
                     quality: *quality,
-                    gateway_router: gateway_router.clone()
-                }).await;
+                    gateway_router: quality_layer.gateway_router.clone()
+                })
+                .await
+                .ok_or_terminate(ctx);
             }
-            VideoSubscriptionMessage::AddSubsription { quality, gateway_router } => {
-                self.quality_layers.insert(quality, gateway_router.clone());
+            VideoSubscriptionMessage::AddSubsription { quality, layer } => {
+                self.quality_layers.insert(quality, layer.clone());
                 if self.waiting_high_quality && quality == StreamQuality::High {
                     self.waiting_high_quality = false;
                     self.active_quality = quality;
-                    let _ = self.packet_forwarder.send(VideoPacketForwarderMessage::Start {
+                    self.packet_forwarder.send(VideoPacketForwarderMessage::Start {
                         quality,
-                        gateway_router
-                    }).await;
+                        gateway_router: layer.gateway_router
+                    })
+                    .await
+                    .ok_or_terminate(ctx);
                 }
             }
-            VideoSubscriptionMessage::ForcePli => if let Some(gateway_router) = self.quality_layers.get(&self.active_quality) {
-                let _  = gateway_router.send(RtpPacketGatewayRouterMessage::ForcePli).await;
+            VideoSubscriptionMessage::ForcePli => if let Some(layer) = self.quality_layers.get(&self.active_quality) {
+                layer.keyframe_interceptor.send(RequestKeyframe).await.ok_or_terminate(ctx);
             }
             VideoSubscriptionMessage::SwitchQualityLayer { to  } => {
-                if let Some(gateway_router) = self.quality_layers.get(&to).cloned() {
-                    let _ = self.packet_forwarder.send(VideoPacketForwarderMessage::LayerSwitched {
-                        quality: to,
-                        gateway_router
-                    }).await;
+                if let Some(layer) = self.quality_layers.get(&to) {
                     self.active_quality = to;
+                    self.packet_forwarder.send(VideoPacketForwarderMessage::LayerSwitched {
+                        quality: to,
+                        gateway_router: layer.gateway_router.clone()
+                    }).await.ok_or_terminate(ctx);
                 }
             },
             VideoSubscriptionMessage::Drop => self.stop(ctx).await,
@@ -114,7 +129,7 @@ impl Actor for VideoSubscription {
     }
 
     async fn stopping(mut self, _: &crate::actor::Ctx<'_, Self>) {
-        self.packet_forwarder.terminate().await;
+        self.packet_forwarder.terminate().await.ok();
         self.quality_layers.clear();
         if let Err(e) = self.pc.remove_track(&self.active_track).await {
             tracing::error!("[VideoSubscription] remove_track {e}");

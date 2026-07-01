@@ -1,7 +1,7 @@
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 use uuid::Uuid;
 use webrtc::{ice_transport::{ice_candidate::RTCIceCandidateInit, ice_connection_state::RTCIceConnectionState}, peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription}, rtp::packet::Packet, rtp_transceiver::rtp_codec::RTPCodecType};
-use crate::{SyncChannel, actor::{Actor, Addr, Ctx, WeakAddr}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, pli_sender::{Ping, PliSender}, quality_monitor::{DeviceType, QualityMonitor, QualityThresholds}, room::{MimeType, Room, RoomMessage, StreamQuality}, rtp_packet_forwarder::RtpPacketGatewayRouter, user::{IceCandidate, MessageType, SignalMessage, Target, User, UserMessage, initiate_ice_restart}, video_packet_forwarder::VideoPacketForwarder};
+use crate::{SyncChannel, actor::{Actor, Addr, Ctx, StoppingExt, WeakAddr}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, keyframe_interceptor::{KeyframeInterceptor}, quality_monitor::{DeviceType, QualityMonitor, QualityThresholds}, room::{MimeType, Room, RoomMessage, StreamQuality}, rtp_packet_forwarder::RtpPacketGatewayRouter, user::{IceCandidate, MessageType, SignalMessage, Target, User, UserMessage, initiate_ice_restart}, video_packet_forwarder::VideoPacketForwarder};
 
 pub struct Publisher<S: SyncChannel> {
     pub peer_id: Uuid,
@@ -47,6 +47,11 @@ impl<S: SyncChannel> Publisher<S> {
             retry_connect_attempts: 0
         })
     }
+    pub async fn try_stop(self) -> Result<(), Error> {
+        self.qualify_monitor.try_terminate().await?;
+        self.pc.close().await?;
+        Ok(())
+    }
 }
 
 pub enum PublisherMessage {
@@ -60,7 +65,7 @@ pub enum PublisherMessage {
     },
     InitiateMonitoring { device_type: DeviceType },
     NewAudioTrack(Track<AudioPacketForwarder>),
-    NewVideoTrack{ quality: StreamQuality, track: Track<VideoPacketForwarder> },
+    NewVideoTrack{ quality: StreamQuality, track: Track<VideoPacketForwarder>, keyframe_interceptor: Addr<KeyframeInterceptor> },
 }
 
 impl<S: SyncChannel> Actor for Publisher<S> {
@@ -79,7 +84,7 @@ impl<S: SyncChannel> Actor for Publisher<S> {
                     if self.retry_connect_attempts < 3 {
                         let addr = ctx.addr.clone();
                         tokio::spawn(async move {
-                            let _ = addr.send(PublisherMessage::CheckIceState).await;
+                           addr.send(PublisherMessage::CheckIceState).await.ok();
                         });
                     } else {
                         self.stop(ctx).await;
@@ -88,51 +93,52 @@ impl<S: SyncChannel> Actor for Publisher<S> {
             }
             PublisherMessage::NewAudioTrack(track) if self.audio_track.is_none() => {
                 self.audio_track = Some(track.clone());
-                let _ = self.room.send(RoomMessage::AddAudioTrack { 
+                self.room.send(RoomMessage::AddAudioTrack { 
                         peer_id: self.peer_id, 
                         track: crate::room::PeerTrack { 
                          gateway_router:   track.addr,
                          mime_type: track.mime_type 
                     }, 
-                }).await;
+                })
+                .await
+                .ok_or_terminate(ctx);
             }
             PublisherMessage::NewAudioTrack(_track) =>  {
                 todo!("implement NewAudioTrack resubscribe")
             }
-            PublisherMessage::NewVideoTrack {quality, track} => {
+            PublisherMessage::NewVideoTrack {quality, track, keyframe_interceptor} => {
                 match self.video_tracks.entry(quality) {
                     std::collections::hash_map::Entry::Occupied( _o) => {
                         todo!("implement NewAudioTrack resubscribe");
                     },
                     std::collections::hash_map::Entry::Vacant(v) => {
                         v.insert(track.clone());
-                        let _ = self.room.send(RoomMessage::AddVideoTrack { 
+                        self.room.send(RoomMessage::AddVideoTrack { 
                             peer_id: self.peer_id, 
                             quality,
+                            keyframe_interceptor,
                             track: crate::room::PeerTrack { 
                                 gateway_router: track.addr,
                                 mime_type: track.mime_type 
                             }, 
-                        }).await;
+                        })
+                        .await
+                        .ok_or_terminate(ctx);
                     }
                 }
             },
             PublisherMessage::Websocket(message) => {
-                if let Err(e) = self.handle_ws_message(message).await {
-                    tracing::error!("{e}");
-                }
+                self.handle_ws_message(message).await.ok_or_terminate(ctx);
             }
             PublisherMessage::IceStateChange { state } => {
-                if let Err(e) = self.handle_ice_state_change(state).await {
-                    tracing::error!("[UserActor] UserMessage::Signal {e}");
-                }
+                self.handle_ice_state_change(state).await.ok_or_terminate(ctx);
             }
             PublisherMessage::IceCandidate { candidate } => {
                let message = SignalMessage::Rtc {
                     target: TARGET,
                     message_type: MessageType::Candidate { candidate }
                 };
-                let _ = self.user.send(UserMessage::SignalMessage(message)).await;
+                self.user.send(UserMessage::SignalMessage(message)).await.ok_or_terminate(ctx);
             },
             PublisherMessage::InitiateMonitoring { device_type } => {
                 let quality_monitor = QualityMonitor::new(self.pc.clone(), self.user.clone(), QualityThresholds::from(device_type)).start();
@@ -169,38 +175,39 @@ impl<S: SyncChannel> Actor for Publisher<S> {
             let addr = addr.clone();
             let ssrc = track.ssrc();
             let mime_type = track.codec().capability.mime_type;
-            let mime_type = MimeType::from_str(&mime_type).map_err(|e| {
-                tracing::error!("{e}");
-                e
-            }).unwrap_or_default();
+            let mime_type = MimeType::from_str(&mime_type).unwrap_or_default();
             let kind = track.kind();
             let rid = StreamQuality::from_str(track.rid());
             Box::pin(async move {
                 match kind {
                     RTPCodecType::Audio | RTPCodecType::Unspecified => { 
-                        let rtp_packet_forwarder= RtpPacketGatewayRouter::<AudioPacketForwarder>::spawn(track, StreamQuality::Audio, None);
-                        let _ = addr.send(
+                        let rtp_packet_forwarder= RtpPacketGatewayRouter::<AudioPacketForwarder>::spawn(track, StreamQuality::Audio,  ssrc, pc.clone());
+                        addr.send(
                             PublisherMessage::NewAudioTrack(Track { mime_type, addr: rtp_packet_forwarder })
-                        ).await;
+                        )
+                        .await
+                        .ok();
                     },
                     RTPCodecType::Video => {
-                        let pli_sender = PliSender::new(pc.clone(), ssrc).start();
+                        let keyframe_interceptor = KeyframeInterceptor::new(pc.clone(), ssrc).start();
                         let quality = rid.unwrap_or(StreamQuality::High);
-                        let rtp_packet_forwarder= RtpPacketGatewayRouter::<VideoPacketForwarder>::spawn(track, quality, Some(pli_sender));
-                        let _ = addr.send(
+                        let rtp_packet_forwarder= RtpPacketGatewayRouter::<VideoPacketForwarder>::spawn(track, quality, ssrc, pc.clone());
+                        addr.send(
                             PublisherMessage::NewVideoTrack {
                                 track: Track { mime_type, addr: rtp_packet_forwarder } , 
-                                quality 
+                                quality,
+                                keyframe_interceptor 
                             }
-                        ).await;
+                        )
+                        .await
+                        .ok();
                     }   
                 };
             })
         }));
     }
     async fn stopping(self, _: &Ctx<'_, Self>) {
-        self.qualify_monitor.try_terminate().await;
-        if let Err(e) = self.pc.close().await {
+        if let Err(e) = self.try_stop().await {
             tracing::error!("[Publisher] stopping {e}");
         }
         tracing::info!("🔴 [Publisher] Пользователь уничтожен.");
@@ -232,13 +239,10 @@ impl<S: SyncChannel> Publisher<S> {
     async fn handle_ws_message(&mut self, message: MessageType) -> Result<(), Error> {
         match message {
             MessageType::Offer {sdp} => {
-                tracing::info!("[Publisher] Offer");
                 let offer_desc = RTCSessionDescription::offer(sdp)?;
                 self.pc.set_remote_description(offer_desc).await?;
                 let answer = self.pc.create_answer(None).await?;
-                 let mut gather_complete = self.pc.gathering_complete_promise().await;
                 self.pc.set_local_description(answer.clone()).await?;
-                let _ = gather_complete.recv().await; //
                 let message = SignalMessage::Rtc {
                     target: Target::Publisher,
                     message_type: MessageType::Answer {sdp: answer.sdp }

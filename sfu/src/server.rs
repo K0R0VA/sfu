@@ -66,7 +66,7 @@ impl<S: SyncChannel> Actor for Server<S> {
             },
             ServerMessage::DeleteRoom { room_id } => {
                 if let Some((_, room)) = self.rooms.remove(&room_id) {
-                    room.terminate().await;
+                    room.terminate().await.ok();
                 }
             }
             ServerMessage::GetRoomAddr { room_id, response_channel } => {
@@ -89,7 +89,7 @@ impl<S: SyncChannel> Actor for Server<S> {
     }
     async fn stopping(self, _ctx: &Ctx<'_, Self>) {
         for (_, room) in self.rooms.into_values() {
-            room.terminate().await;
+            room.terminate().await.ok();
         }
         tracing::info!("🔴 [RoomActor] Комната уничтожена.");
     }

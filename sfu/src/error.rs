@@ -12,6 +12,8 @@ pub enum Error {
     Broadcast(#[from] RecvError),
     #[error(transparent)]
     Oneshot(#[from] tokio::sync::oneshot::error::RecvError),
+    #[error("Channel closed")]
+    ChannelClosed,
     #[error("System failed on {message}")]
     SystemError {message: Cow<'static, str> }
 }
