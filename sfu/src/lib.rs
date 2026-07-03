@@ -8,7 +8,7 @@ pub mod video_packet_forwarder;
 pub mod audio_subscription;
 pub mod audio_packet_forwarder;
 pub mod keyframe_interceptor;
-pub mod rtp_packet_forwarder;
+pub mod rtp_packet_gateway_router;
 pub mod subscriber_pc;
 pub mod publisher_pc;
 pub mod server;

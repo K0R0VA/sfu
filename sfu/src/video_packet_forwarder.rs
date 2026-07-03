@@ -2,7 +2,7 @@ use std::{collections::VecDeque, sync::Arc, time::{Instant}};
 
 use webrtc::{rtp::packet::Packet, track::track_local::{TrackLocalWriter, track_local_static_rtp::TrackLocalStaticRTP}};
 
-use crate::{actor::{Actor, Addr, Ctx},  error::Error, room::{MimeType, StreamQuality}, rtp_packet_forwarder::{RtpPacketGatewayRouter, RtpPacketGatewayRouterMessage}};
+use crate::{actor::{Actor, Addr, Ctx},  error::Error, room::{MimeType, StreamQuality}, rtp_packet_gateway_router::{RtpPacketGatewayRouter, RtpPacketGatewayRouterMessage}};
 
 pub struct VideoPacketForwarder {
     track: Arc<TrackLocalStaticRTP>,

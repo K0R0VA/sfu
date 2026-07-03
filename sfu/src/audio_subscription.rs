@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    SyncChannel, actor::{Actor, Addr, StoppingExt}, audio_packet_forwarder::AudioPacketForwarder, error::Error, rtp_packet_forwarder::{ RtpPacketGatewayRouter, RtpPacketGatewayRouterMessage}, user::{ConnectionRequest, User, UserMessage},
+    SyncChannel, actor::{Actor, Addr, StoppingExt}, audio_packet_forwarder::AudioPacketForwarder, error::Error, rtp_packet_gateway_router::{ RtpPacketGatewayRouter, RtpPacketGatewayRouterMessage}, user::{ConnectionRequest, User, UserMessage},
 };
 use uuid::Uuid;
 use webrtc::{
