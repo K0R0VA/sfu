@@ -47,10 +47,12 @@ export class UserWebsocket {
                         kind: "connect",
                         device_type
                     }));
-                    this.users.value.set(this.peer_id, {
-                        stream: video_stream,
-                        isLocal: true
-                    });
+                    if (!!video_stream) {
+                        this.users.value.set(this.peer_id, {
+                            stream: video_stream,
+                            isLocal: true
+                        });
+                    }
                     this.room_status.value = "Подключено";
                     break;
                 }

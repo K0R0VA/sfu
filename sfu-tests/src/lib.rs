@@ -1,19 +1,16 @@
-use std::{collections::HashSet, fs::File, io::BufReader, str::FromStr, sync::Arc, time::Duration};
+use std::{collections::HashSet,  fs::File, io::BufReader, str::FromStr, sync::Arc, time::Duration};
 
 use sfu::{SyncChannel, create_peer, error::Error, user::{IceCandidate, SignalMessage}};
-use tokio::{sync::Mutex, time::interval};
+use tokio::{sync::Mutex};
 use uuid::Uuid;
-use webrtc::{ice_transport::ice_candidate::RTCIceCandidateInit, 
-    media::{Sample, io::ivf_reader::IVFReader}, 
-    peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription}, 
-    rtp_transceiver::{RTCRtpTransceiverInit, rtp_codec::RTCRtpCodecCapability, rtp_transceiver_direction::RTCRtpTransceiverDirection}, 
-    track::track_local::track_local_static_sample::TrackLocalStaticSample
+use webrtc::{ice_transport::ice_candidate::RTCIceCandidateInit, media::{Sample, io::ivf_reader::{ IVFReader}}, peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription}, rtp_transceiver::{RTCRtpTransceiverInit, rtp_codec::RTCRtpCodecCapability, rtp_transceiver_direction::RTCRtpTransceiverDirection}, track::track_local::track_local_static_sample::TrackLocalStaticSample
 };
 
 #[cfg(test)]
 mod connect_to_room;
 #[cfg(test)]
 mod ice_restart;
+
 pub struct TestClient {
     pub peer_id: Option<Uuid>,
     pub publisher_pc: Arc<RTCPeerConnection>,
@@ -21,7 +18,14 @@ pub struct TestClient {
     pub sfu_tx: tokio::sync::mpsc::Sender<SignalMessage>,
     pub sfu_rx: tokio::sync::mpsc::Receiver<SignalMessage>,
     pub connected_peers: Arc<Mutex<HashSet<Uuid>>>,
-    pub connected: bool,
+    pub markers: Markers,
+}
+
+pub struct Markers {
+    pub ice_connected: bool,
+    pub send_offer: bool,
+    pub receive_answer: bool,
+    pub receive_offer: bool,
 }
 
 impl TestClient {
@@ -35,7 +39,7 @@ impl TestClient {
             sfu_rx,
             sfu_tx,
             connected_peers: Arc::new(Mutex::new(HashSet::new())),
-            connected: false,
+            markers: Markers { ice_connected: false, receive_answer: false, send_offer: false, receive_offer: false, },
         })
     }
     pub async fn setup(&self) -> Result<(), sfu::error::Error> {
@@ -58,9 +62,7 @@ impl TestClient {
             }
             Box::pin(async {})
         }));
-
         let channel = self.sfu_tx.clone();
-        
         self.subscriber_pc.on_ice_candidate(Box::new(move |c| {
             if let Some(candidate) = c.and_then(|c| c.to_json().ok()) {
                 let candidate = IceCandidate {
@@ -97,13 +99,13 @@ impl TestClient {
         }));
         Ok(())
     }
-    pub async fn run_loop(&mut self) -> Result<(), Error> {
-        while let Some(message) = self.sfu_rx.recv().await {
+    pub async fn handle_message(&mut self) -> Result<(), Error> {
+        if let Some(message) = self.sfu_rx.recv().await {
             match message {
                 SignalMessage::Welcome { peer_id } => {
-                    tracing::info!("Welcome");
                     self.peer_id = Some(peer_id);
                     self.add_track().await?;
+                    self.markers.send_offer = true;
                     self.sfu_tx.send(SignalMessage::Connect { device_type: sfu::quality_monitor::DeviceType::Desktop }).await.unwrap();
                 }
                 SignalMessage::PeerLeft { peer_id }  => {
@@ -117,21 +119,21 @@ impl TestClient {
                     };
                     match message_type {
                         sfu::user::MessageType::Candidate { candidate: IceCandidate { candidate, sdp_mid, sdp_mline_index } } => {
-                            tracing::info!("Candidate");
                             pc.add_ice_candidate(RTCIceCandidateInit {
                                 candidate,
                                 sdp_mid,
                                 sdp_mline_index, 
                                 ..Default::default()
                             }).await?;
+                            self.markers.ice_connected = true;
                         }
                         sfu::user::MessageType::Answer { sdp } => {
-                            tracing::info!("Answer");
                             let description = RTCSessionDescription::answer(sdp)?;
                             self.publisher_pc.set_remote_description(description).await?;
+                            self.markers.receive_answer = true;
                         }
                         sfu::user::MessageType::Offer { sdp } => {
-                            tracing::info!("Offer");
+                            tracing::info!("receive offer");
                             let description = RTCSessionDescription::offer(sdp)?;
                             self.subscriber_pc.set_remote_description(description).await?;
                             let answer = self.subscriber_pc.create_answer(None).await?;
@@ -141,9 +143,9 @@ impl TestClient {
                                 message_type: sfu::user::MessageType::Answer { sdp: answer.sdp }
                             };
                             self.sfu_tx.send(response).await.unwrap();
+                            self.markers.receive_offer = true;
                         },
                         sfu::user::MessageType::IceRestart { sdp } => {
-                            tracing::info!("IceRestart");
                             let description = RTCSessionDescription::offer(sdp)?;
                             pc.set_remote_description(description).await?;
                             let answer = pc.create_answer(None).await?;
@@ -190,39 +192,43 @@ impl TestClient {
                 sdp: offer.sdp
             } 
         }).await.unwrap();
-
-        let file = File::open("../output.ivf").unwrap();
-        let reader = BufReader::new(file);
-        let (mut reader, header) = IVFReader::new(reader).unwrap();
-
-        let sleep_time = Duration::from_millis(
-            ((1000 * header.timebase_numerator) / header.timebase_denominator) as u64,
-        );
-        let mut ticker = interval(sleep_time);
-        tokio::task::spawn(async move {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+        tokio::task::spawn_blocking(move || {
+            let file = File::open("../output.ivf").unwrap();
+            let buf_reader = BufReader::new(file);
+            let (mut reader, header) = IVFReader::new(buf_reader).unwrap();
+            let sleep_time = Duration::from_millis(
+                ((1000 * header.timebase_numerator) / header.timebase_denominator) as u64,
+            );
             loop {
                 let frame = match reader.parse_next_frame() {
                     Ok((frame, _)) => frame,
-                    Err(err) => {
-                        println!("All video frames parsed and sent: {err}");
-                        break;
+                    Err(_) => {
+                        let file = File::open("../output.ivf").unwrap();
+                        let buf_reader = BufReader::new(file);
+                        reader = IVFReader::new(buf_reader).unwrap().0;
+                        continue;
                     }
                 };
-
+                if tx.blocking_send((frame, sleep_time)).is_err() {
+                    break ;
+                }
+                std::thread::sleep(sleep_time);
+            }
+        });
+        tokio::task::spawn(async move {
+            while let Some((frame, duration)) = rx.recv().await {
                 video_track
                     .sample_writer()
                     .write_sample(&Sample {
                         data: frame.freeze(),
-                        duration: Duration::from_secs(1),
+                        duration,
                         ..Default::default()
                     })
                     .await?;
-
-                let _ = ticker.tick().await;
             }
             Result::<_, Error>::Ok(())
         });
-
         Ok(())
     }
 }

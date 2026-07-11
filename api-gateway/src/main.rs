@@ -36,7 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn ws_handler(
     room_id: Path<Uuid>,
     ws: WebSocketUpgrade,
-    State(server): State<Addr<Server<WebsocketSync>>>,
+    State(server): State<Addr<Server<WebsocketSyncChannel>>>,
 ) -> Response {
     let room_id = room_id.0;
     ws.on_upgrade(move |socket| async move {
@@ -47,7 +47,7 @@ async fn ws_handler(
 }
 
 async fn rooms(
-    State(server): State<Addr<Server<WebsocketSync>>>,
+    State(server): State<Addr<Server<WebsocketSyncChannel>>>,
 ) -> Response {
     let rooms = match server.get_rooms().await {
         Ok(rooms) => rooms,
@@ -67,7 +67,7 @@ pub struct CreateRoomResponse {
 }
 
 async fn create_room(
-    State(server): State<Addr<Server<WebsocketSync>>>,
+    State(server): State<Addr<Server<WebsocketSyncChannel>>>,
     Json(CreateRoomRequest { name }): Json<CreateRoomRequest>,
 ) -> Response {
     let result = server
@@ -84,10 +84,10 @@ async fn create_room(
 async fn try_connect_websocket(
     room_id: Uuid,
     ws: WebSocket,
-    server: Addr<Server<WebsocketSync>>
+    server: Addr<Server<WebsocketSyncChannel>>
 ) -> Result<(), sfu::error::Error> {
     let (ws_tx, ws_rx) = ws.split();
-    let mut sync_channel = WebsocketSync {socket: ws_tx};
+    let mut sync_channel = WebsocketSyncChannel {socket: ws_tx};
     let (tx, rx) = tokio::sync::oneshot::channel();
     server.send(ServerMessage::GetRoomAddr { room_id, response_channel: tx }).await?;
     let (room_name, room) = match rx.await? {
@@ -120,11 +120,11 @@ async fn try_connect_websocket(
     Ok(())
 }
 
-pub struct WebsocketSync {
+pub struct WebsocketSyncChannel {
     socket: SplitSink<WebSocket, Message>
 }
 
-impl SyncChannel for WebsocketSync {
+impl SyncChannel for WebsocketSyncChannel {
     type Item = String;
     async fn send(&mut self, message: String) -> Result<(), sfu::error::Error> {
         self.socket.send(Message::Text(message.into()))

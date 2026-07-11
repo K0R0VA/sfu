@@ -11,6 +11,7 @@ pub struct Publisher<S: SyncChannel> {
     pub user: Addr<User<S>>,
     pub room: Addr<Room<S>>,    
     pub qualify_monitor: WeakAddr<QualityMonitor<S>>,
+    pub ice_candidate_send: bool,
     pub disconnected: bool,
     pub retry_connect_attempts: u8,
 }
@@ -44,7 +45,8 @@ impl<S: SyncChannel> Publisher<S> {
             audio_track: None,
             qualify_monitor: WeakAddr::default(),
             disconnected: false,
-            retry_connect_attempts: 0
+            retry_connect_attempts: 0,
+            ice_candidate_send: false,
         })
     }
     pub async fn try_stop(self) -> Result<(), Error> {
@@ -133,12 +135,13 @@ impl<S: SyncChannel> Actor for Publisher<S> {
             PublisherMessage::IceStateChange { state } => {
                 self.handle_ice_state_change(state).await.ok_or_terminate(ctx);
             }
-            PublisherMessage::IceCandidate { candidate } => {
+            PublisherMessage::IceCandidate { candidate } => if !self.ice_candidate_send {
                let message = SignalMessage::Rtc {
                     target: TARGET,
                     message_type: MessageType::Candidate { candidate }
                 };
                 self.user.send(UserMessage::SignalMessage(message)).await.ok_or_terminate(ctx);
+                self.ice_candidate_send = true;
             },
             PublisherMessage::InitiateMonitoring { device_type } => {
                 let quality_monitor = QualityMonitor::new(self.pc.clone(), self.user.clone(), QualityThresholds::from(device_type)).start();

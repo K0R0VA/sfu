@@ -1,14 +1,13 @@
 use std::{collections::HashMap, sync::{Arc}};
 use uuid::Uuid;
 use webrtc::{ice_transport::{ice_candidate::RTCIceCandidateInit, ice_connection_state::RTCIceConnectionState}, peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription, signaling_state::RTCSignalingState}};
-use crate::{SyncChannel, actor::{Actor, Addr, Ctx}, audio_packet_forwarder::AudioPacketForwarder, audio_subscription::AudioSubscription, create_peer, error::Error, keyframe_interceptor::{KeyframeInterceptor}, quality_monitor::QualityMonitor, room::StreamQuality, user::{ConnectionRequest, IceCandidate, MessageType, SignalMessage, Target, User, UserMessage, initiate_ice_restart}, video_packet_forwarder::VideoPacketForwarder, video_subscription::{QualityLayer, VideoSubscription, VideoSubscriptionMessage}};
+use crate::{SyncChannel, actor::{Actor, Addr, Ctx}, audio_packet_forwarder::AudioPacketForwarder, audio_subscription::AudioSubscription, create_peer, error::Error, keyframe_interceptor::{KeyframeInterceptor}, room::StreamQuality, user::{ConnectionRequest, IceCandidate, MessageType, SignalMessage, Target, User, UserMessage, initiate_ice_restart}, video_packet_forwarder::VideoPacketForwarder, video_subscription::{QualityLayer, VideoSubscription, VideoSubscriptionMessage}};
 
 pub struct Subscriber<S: SyncChannel> {
     pub user: Addr<User<S>>,
     pub pc: Arc<RTCPeerConnection>,
     pub audio_subscriptions: HashMap<Uuid, Addr<AudioSubscription<S>>>,
     pub video_subscriptions: HashMap<Uuid, Addr<VideoSubscription>>,
-    pub qualify_monitor: Option<Addr<QualityMonitor<S>>>,
     pub disconnected: bool,
     pub retry_connect_attempts: u8,
 }
@@ -24,7 +23,6 @@ impl<S: SyncChannel> Subscriber<S> {
             pc,
             audio_subscriptions: HashMap::new(),
             video_subscriptions: HashMap::new(),
-            qualify_monitor: None,
             disconnected: false,
             retry_connect_attempts: 0
         })
@@ -240,14 +238,12 @@ impl<S: SyncChannel> Subscriber<S> {
         Ok(())
     }
     async fn disconnect_from_user(&mut self, speaker_id: Uuid) -> Result<(), Error> {
-        let audio_subscription = self.audio_subscriptions
-            .remove(&speaker_id)
-            .ok_or(Error::SystemError { message: "subscription not found".into() })?;
-        audio_subscription.terminate().await?;
-        let video_subscription = self.video_subscriptions
-            .remove(&speaker_id)
-            .ok_or(Error::SystemError { message: "subscription not found".into() })?;
-        video_subscription.terminate().await?;
+        if let Some(audio_subscriptions) = self.audio_subscriptions.remove(&speaker_id) {
+            audio_subscriptions.terminate().await?;
+        };
+        if let Some(video_subscription) = self.video_subscriptions.remove(&speaker_id) {
+            video_subscription.terminate().await?;
+        };
         Ok(())
     }
 }

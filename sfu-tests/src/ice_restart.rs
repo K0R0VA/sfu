@@ -29,7 +29,7 @@ async fn ice_restart() -> Result<(), Error> {
                         assert_ne!(client.peer_id, None);
                         break;
                     }
-                    r = client.run_loop() => {
+                    r = client.handle_message() => {
                         assert_ne!(true, r.is_err())
                     }
 
@@ -54,7 +54,7 @@ async fn ice_restart() -> Result<(), Error> {
                         assert_ne!(client.peer_id, None);
                         break;
                     }
-                    r = client.run_loop() => {
+                    r = client.handle_message() => {
                         return r;
                     }
 
