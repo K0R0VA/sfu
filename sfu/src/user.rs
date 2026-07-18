@@ -1,18 +1,19 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use webrtc::{peer_connection::{RTCPeerConnection, offer_answer_options::RTCOfferOptions, }, rtp::packet::Packet, };
-use crate::{SyncChannel, actor::{Actor, Addr, Ctx, WeakAddr}, audio_packet_forwarder::AudioPacketForwarder, error::Error, keyframe_interceptor::KeyframeInterceptor, publisher_pc::{Publisher, PublisherMessage}, quality_monitor::DeviceType, room::{MimeType, Room, RoomMessage, StreamQuality}, rtp_packet_gateway_router::RtpPacketGatewayRouter, subscriber_pc::{Subscriber, SubscriberMessage}, video_packet_forwarder::VideoPacketForwarder};
+use crate::{Storage, SyncChannel, actor::{Actor, Addr, Ctx, WeakAddr}, audio_packet_forwarder::AudioPacketForwarder, error::Error, keyframe_interceptor::KeyframeInterceptor, publisher_pc::{Publisher, PublisherMessage}, quality_monitor::DeviceType, room::{MimeType, Room, RoomMessage, StreamQuality}, rtp_packet_gateway_router::RtpPacketGatewayRouter, subscriber_pc::{Subscriber, SubscriberMessage}, video_packet_forwarder::VideoPacketForwarder};
 
-pub struct User<S: SyncChannel> {
-    pub room: Addr<Room<S>>,
+pub struct User<C: SyncChannel, S: Storage> {
+    pub room: Addr<Room<C, S>>,
     pub peer_id: Uuid,
-    pub sync_channel: S,
-    pub publisher: WeakAddr<Publisher<S>>,
-    pub subscriber: WeakAddr<Subscriber<S>>,
+    // pub sync_channel: 
+    pub sync_channel: C, // 
+    pub publisher: WeakAddr<Publisher<C, S>>,
+    pub subscriber: WeakAddr<Subscriber<C, S>>,
 }
 
-impl<S: SyncChannel> User<S> {
-    pub async fn new(sync_channel: S, room: Addr<Room<S>>) -> Result<Self, Error> {
+impl<C: SyncChannel, S: Storage> User<C, S> {
+    pub async fn new(sync_channel: C, room: Addr<Room<C, S>>) -> Result<Self, Error> {
         let peer_id = Uuid::new_v4();
         Ok(Self {
             peer_id,
@@ -54,7 +55,7 @@ pub enum ConnectionRequestKind {
     Video { stream_quality: StreamQuality }
 }
 
-impl<S: SyncChannel> Actor for User<S> {
+impl<C: SyncChannel, S: Storage> Actor for User<C, S> {
     type Message = UserMessage;
     async fn handle(&mut self, ctx: &mut Ctx<'_, Self>, msg: Self::Message) {
         match msg {
@@ -151,7 +152,7 @@ pub enum Target {
     Subscriber
 }
 
-impl<S: SyncChannel> User<S> {
+impl<C: SyncChannel, S: Storage> User<C, S> {
     async fn initiate(&mut self, ctx: &Ctx<'_, Self>) -> Result<(), Error> {
         let addr = ctx.addr.clone();
         let subscriber = Subscriber::new(addr.clone()).await?.start();
@@ -162,7 +163,9 @@ impl<S: SyncChannel> User<S> {
         Ok(())
     }
     async fn send_welcome(&mut self) -> Result<(), Error> {
-        self.sync_channel.send(SignalMessage::Welcome { peer_id: self.peer_id }.into()).await?;
+        self.sync_channel.send(SignalMessage::Welcome { peer_id: self.peer_id }.into())
+            .await
+            .map_err(|e| Error::SystemError { message: e.to_string().into() })?;
         Ok(())
     }
     async fn handle_ws_message(&mut self, ctx: &mut Ctx<'_, Self>, message: SyncMessage) -> Result<(), Error> {
@@ -193,12 +196,16 @@ impl<S: SyncChannel> User<S> {
         Ok(())
     }
     async fn send_ws_message(&mut self, msg: SignalMessage) -> Result<(), Error> {
-        self.sync_channel.send(msg.into()).await?;
+        self.sync_channel.send(msg.into())
+            .await
+            .map_err(|e| Error::SystemError { message: e.to_string().into() })?;
         Ok(())
     }
     async fn unsubscribe(&mut self, peer_id: Uuid) -> Result<(), Error> {
         let _ = self.subscriber.try_send(SubscriberMessage::Unsubscribe { peer_id }).await;
-        self.sync_channel.send(SignalMessage::PeerLeft { peer_id }.into()).await?;
+        self.sync_channel.send(SignalMessage::PeerLeft { peer_id }.into())
+            .await
+            .map_err(|e| Error::SystemError { message: e.to_string().into() })?;
         Ok(())
     }
 }

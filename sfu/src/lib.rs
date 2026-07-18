@@ -5,14 +5,15 @@ pub mod user;
 pub mod video_subscription;
 pub mod quality_monitor;
 pub mod video_packet_forwarder;
-pub mod audio_subscription;
 pub mod audio_packet_forwarder;
 pub mod keyframe_interceptor;
 pub mod rtp_packet_gateway_router;
 pub mod subscriber_pc;
 pub mod publisher_pc;
 pub mod server;
-
+use std::fmt::Debug;
+use chrono::{DateTime, Utc};
+use uuid::Uuid;
 use webrtc::api::APIBuilder;
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
@@ -82,5 +83,33 @@ pub async fn create_peer() -> Result<RTCPeerConnection, Error> {
 
 pub trait SyncChannel: Send + 'static {
     type Item: From<SignalMessage>;
-    fn send(&mut self, message: Self::Item) -> impl Future<Output = Result<(), Error>> + Send;
+    type Error: std::error::Error + Debug;
+    fn send(&mut self, message: Self::Item) -> impl Future<Output = Result<(), Self::Error>> + Send;
+}
+
+pub trait Storage: Send + 'static + Sized {
+    type Configuration: StorageConfiguration;
+    type Error: std::error::Error + Debug;
+    fn connect(configuration: &Self::Configuration) -> impl Future<Output = Result<Self, Self::Error>> + Send;
+    fn insert(&mut self, item: StorageItem) -> impl Future<Output = Result<(), Self::Error>> + Send;
+}
+
+pub trait StorageConfiguration: Send +'static + Sized {
+    type Error: std::error::Error + Debug;
+    fn from_env() -> Result<Self, Self::Error>;
+}
+
+pub struct StorageItem<'a> {
+    pub stats: &'a CurrentStats,
+    pub timestamp: DateTime<Utc>,
+    pub connection_id: Uuid
+}
+
+#[derive(Default, Debug)]
+pub struct CurrentStats {
+    packet_loss: f64,
+    bitrate_bps: u64,
+    last_packets_received: u64,
+    last_bytes_received: u64,
+    last_nack_count: u64,
 }

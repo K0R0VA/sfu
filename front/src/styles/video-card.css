@@ -154,6 +154,14 @@
   animation: wave-rise 0.5s infinite ease-in-out alternate;
 }
 
+.badge-fps {
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.85;
+  margin-left: 2px;
+  font-variant-numeric: tabular-nums; /* Предотвращает дергание цифр при смене FPS */
+}
+
 .audio-wave span:nth-child(1) { height: 30%; animation-delay: 0.1s; }
 .audio-wave span:nth-child(2) { height: 100%; animation-delay: 0.3s; }
 .audio-wave span:nth-child(3) { height: 60%; animation-delay: 0s; }
@@ -163,3 +171,4 @@
   0% { transform: scaleY(0.3); }
   100% { transform: scaleY(1.1); }
 }
+

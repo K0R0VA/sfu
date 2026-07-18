@@ -90,10 +90,6 @@ const fetchRooms = async () => {
 // Создание комнаты
 const createRoom = async () => {
   const name = newRoomName.value;
-  if (!name) {
-    error.value = 'Введите название комнаты';
-    return;
-  }
   if (isCreating.value) return;
   try {
     isCreating.value = true;

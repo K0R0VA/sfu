@@ -1,7 +1,5 @@
-use std::{sync::Arc};
-
-use webrtc::{rtp::{header::Header, packet::Packet}, track::track_local::{TrackLocalWriter, track_local_static_rtp::TrackLocalStaticRTP}};
-
+use std::{sync::Arc, time::{Instant}};
+use webrtc::{rtp::{packet::Packet}, track::track_local::{TrackLocalWriter, track_local_static_rtp::TrackLocalStaticRTP}};
 use crate::{actor::{Actor, Addr, Ctx, StoppingExt}, error::Error, room::{MimeType, StreamQuality}, rtp_packet_gateway_router::{RtpPacketGatewayRouter, RtpPacketGatewayRouterMessage}};
 
 pub struct VideoPacketForwarder {
@@ -12,11 +10,10 @@ pub struct VideoPacketForwarder {
     pending_channel: Option<Addr<RtpPacketGatewayRouter<Self>>>,
     key_frame_buffer: Vec<Packet>,
     rtp_packet_cache: RtpPacketCache,
+    start_instant: Instant,
+    last_incoming_ts: u32,            
+    current_generated_ts: u32,
     last_sequence_number: u16,
-    sequence_offset: u16,
-    last_timestamp: u32,
-    timestamp_offset: i64,
-    frame_delta: u32,
     is_layer_switching: bool,
 }
 pub struct RtpPacketCache {
@@ -48,14 +45,13 @@ impl VideoPacketForwarder {
         Self {
             track,
             mime_type,
-            last_sequence_number: 0,
-            sequence_offset: 0,
-            last_timestamp: 0,
-            timestamp_offset: 0,
+            last_sequence_number: u16::MAX - 1000,
             key_frame_buffer: Vec::new(),
             rtp_packet_cache: RtpPacketCache::default(),
-            frame_delta: 0,
             is_layer_switching: false, 
+            start_instant: Instant::now(),
+            current_generated_ts: 0,
+            last_incoming_ts: 0,
             current_quality: None,
             current_channel: None,
             pending_channel: None,
@@ -85,10 +81,6 @@ impl VideoPacketForwarder {
         }
         if self.current_quality == Some(quality) {
             self.apply_offsets(&mut packet);
-            if packet.header.sequence_number % 5 == 0 {
-                self.rtp_packet_cache.insert(packet);
-                return Ok(());
-            }
             self.write_packet(packet).await?;
         }
         Ok(())
@@ -96,7 +88,7 @@ impl VideoPacketForwarder {
     async fn handle_missed_packets(&mut self, missing_packets: Vec<u16>) -> Result<(), Error> {
         for packet_number in missing_packets {
             if let Some(packet) = self.rtp_packet_cache.get(packet_number) {
-                self.track.write_rtp(packet).await?;
+                self.track.write_rtp(&packet).await?;
             }
         }
         Ok(())
@@ -120,11 +112,6 @@ impl VideoPacketForwarder {
                 self.key_frame_buffer.push(packet);
                 return Ok(());
             }
-            let Packet { header: Header {timestamp, sequence_number, ..}, .. } = &self.key_frame_buffer[0];
-            self.update_offsets_on_layer_switch(
-                *timestamp, 
-                *sequence_number
-            );
             self.current_quality = Some(quality);
             self.is_layer_switching = false;
             if let Some(pending_channel) = self.pending_channel.take() {
@@ -143,26 +130,16 @@ impl VideoPacketForwarder {
         }
         Ok(())
     }
-    fn update_frame_delta(&mut self, timestamp: u32) {
-        let gap = timestamp.wrapping_sub(self.last_timestamp);
-        self.frame_delta = if gap == 0 { self.frame_delta } else { gap }
-    }
-    fn update_offsets_on_layer_switch(&mut self, timestamp: u32, sequence: u16) {
-        let expected_new_ts = self.last_timestamp.wrapping_add(self.frame_delta);
-        self.timestamp_offset = expected_new_ts as i64 - timestamp as i64;
-        let expected_new_seq = self.last_sequence_number.wrapping_add(1);
-        self.sequence_offset = expected_new_seq.wrapping_sub(sequence);
-    }
     fn apply_offsets(&mut self, packet: &mut Packet) {
-        let corrected_seq = packet.header.sequence_number.wrapping_add(1);
-        packet.header.sequence_number = corrected_seq;
-        let correct_ts = (packet.header.timestamp as i64 + self.timestamp_offset) as u32;
-        if correct_ts != self.last_timestamp {
-            self.update_frame_delta(correct_ts);
-            self.last_timestamp = correct_ts; 
+        self.last_sequence_number = self.last_sequence_number.wrapping_add(1);
+        packet.header.sequence_number = self.last_sequence_number;
+        if self.last_incoming_ts != packet.header.timestamp {
+            let elapsed_micros = self.start_instant.elapsed().as_micros() as u64;
+            let target_timestamp = elapsed_micros.wrapping_mul(9) / 100;
+            self.last_incoming_ts = packet.header.timestamp;
+            self.current_generated_ts = target_timestamp as u32;
         }
-        packet.header.timestamp = correct_ts;
-        self.last_sequence_number = corrected_seq;
+        packet.header.timestamp = self.current_generated_ts;
     }
 }
 
@@ -178,13 +155,14 @@ impl Actor for VideoPacketForwarder {
             } 
             if !self.is_layer_switching => {
                 self.is_layer_switching = true;
-                forwarder.send(RtpPacketGatewayRouterMessage::Subscribe(ctx.addr.clone())).await.ok_or_terminate(ctx);
+                forwarder.do_send(RtpPacketGatewayRouterMessage::Subscribe(ctx.addr.clone())).ok_or_terminate(ctx);
                 self.pending_channel = Some(forwarder);
             },
             VideoPacketForwarderMessage::Start { quality, gateway_router: forwarder } => {
                 self.current_quality = Some(quality);
-                forwarder.send(RtpPacketGatewayRouterMessage::Subscribe(ctx.addr.clone())).await.ok_or_terminate(ctx);
+                forwarder.do_send(RtpPacketGatewayRouterMessage::Subscribe(ctx.addr.clone())).ok_or_terminate(ctx);
                 self.current_channel = Some(forwarder);
+                self.start_instant = Instant::now();
             }
             VideoPacketForwarderMessage::RtpPacket {packet, quality} => {
                 self.forward(ctx, quality, packet).await.ok_or_terminate(ctx);

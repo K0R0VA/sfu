@@ -1,16 +1,16 @@
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 use uuid::Uuid;
 use webrtc::{ice_transport::{ice_candidate::RTCIceCandidateInit, ice_connection_state::RTCIceConnectionState}, peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription}, rtp::packet::Packet, rtp_transceiver::rtp_codec::RTPCodecType};
-use crate::{SyncChannel, actor::{Actor, Addr, Ctx, StoppingExt, WeakAddr}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, keyframe_interceptor::{KeyframeInterceptor}, quality_monitor::{DeviceType, QualityMonitor, QualityThresholds}, room::{MimeType, Room, RoomMessage, StreamQuality}, rtp_packet_gateway_router::RtpPacketGatewayRouter, user::{IceCandidate, MessageType, SignalMessage, Target, User, UserMessage, initiate_ice_restart}, video_packet_forwarder::VideoPacketForwarder};
+use crate::{Storage, SyncChannel, actor::{Actor, Addr, Ctx, StoppingExt, WeakAddr}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, keyframe_interceptor::KeyframeInterceptor, quality_monitor::{DeviceType, QualityMonitor, QualityThresholds}, room::{MimeType, Room, RoomMessage, StreamQuality}, rtp_packet_gateway_router::RtpPacketGatewayRouter, user::{IceCandidate, MessageType, SignalMessage, Target, User, UserMessage, initiate_ice_restart}, video_packet_forwarder::VideoPacketForwarder};
 
-pub struct Publisher<S: SyncChannel> {
+pub struct Publisher<C: SyncChannel, S: Storage> {
     pub peer_id: Uuid,
     pub pc: Arc<RTCPeerConnection>,
     pub video_tracks: HashMap<StreamQuality, Track<VideoPacketForwarder>>,
     pub audio_track: Option<Track<AudioPacketForwarder>>,
-    pub user: Addr<User<S>>,
-    pub room: Addr<Room<S>>,    
-    pub qualify_monitor: WeakAddr<QualityMonitor<S>>,
+    pub user: Addr<User<C, S>>,
+    pub room: Addr<Room<C, S>>,    
+    pub qualify_monitor: WeakAddr<QualityMonitor<C, S>>,
     pub ice_candidate_send: bool,
     pub disconnected: bool,
     pub retry_connect_attempts: u8,
@@ -32,8 +32,8 @@ impl<T: Actor> Clone for Track<T> where T::Message: From<(StreamQuality, Packet)
 
 const TARGET: Target = Target::Publisher;
 
-impl<S: SyncChannel> Publisher<S> {
-    pub async fn new(user: Addr<User<S>>, room: Addr<Room<S>>, peer_id: Uuid) -> Result<Self, Error> {
+impl<C: SyncChannel, S: Storage> Publisher<C, S> {
+    pub async fn new(user: Addr<User<C, S>>, room: Addr<Room<C, S>>, peer_id: Uuid) -> Result<Self, Error> {
         let peer = create_peer().await?;
         let pc = Arc::new(peer);
         Ok(Self {
@@ -70,7 +70,7 @@ pub enum PublisherMessage {
     NewVideoTrack{ quality: StreamQuality, track: Track<VideoPacketForwarder>, keyframe_interceptor: Addr<KeyframeInterceptor> },
 }
 
-impl<S: SyncChannel> Actor for Publisher<S> {
+impl<C: SyncChannel, S: Storage> Actor for Publisher<C, S> {
     type Message = PublisherMessage;
     async fn handle(&mut self, ctx: &mut Ctx<'_, Self>, msg: Self::Message) {
         match msg {
@@ -144,8 +144,7 @@ impl<S: SyncChannel> Actor for Publisher<S> {
                 self.ice_candidate_send = true;
             },
             PublisherMessage::InitiateMonitoring { device_type } => {
-                let quality_monitor = QualityMonitor::new(self.pc.clone(), self.user.clone(), QualityThresholds::from(device_type)).start();
-                self.qualify_monitor.set_addr(quality_monitor);
+                self.initiate_monitoring(device_type).await.ok_or_terminate(ctx);
             }
         }
     }   
@@ -217,7 +216,18 @@ impl<S: SyncChannel> Actor for Publisher<S> {
     }
 }
 
-impl<S: SyncChannel> Publisher<S> {
+impl<C: SyncChannel, S: Storage> Publisher<C, S> {
+    async fn initiate_monitoring(&mut self, device_type: DeviceType) -> Result<(), Error> {
+        let quality_monitor = QualityMonitor::new(
+            self.pc.clone(), 
+            self.user.clone(), 
+            QualityThresholds::from(device_type)
+        )
+            .await?
+            .start();
+        self.qualify_monitor.set_addr(quality_monitor);
+        Ok(())
+    }
     async fn handle_ice_state_change(&mut self, state: RTCIceConnectionState) -> Result<(), Error> {
         match state {
             RTCIceConnectionState::Disconnected | RTCIceConnectionState::Failed => {

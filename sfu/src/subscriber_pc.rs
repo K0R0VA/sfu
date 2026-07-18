@@ -1,12 +1,12 @@
 use std::{collections::HashMap, sync::{Arc}};
 use uuid::Uuid;
 use webrtc::{ice_transport::{ice_candidate::RTCIceCandidateInit, ice_connection_state::RTCIceConnectionState}, peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription, signaling_state::RTCSignalingState}};
-use crate::{SyncChannel, actor::{Actor, Addr, Ctx}, audio_packet_forwarder::AudioPacketForwarder, audio_subscription::AudioSubscription, create_peer, error::Error, keyframe_interceptor::{KeyframeInterceptor}, room::StreamQuality, user::{ConnectionRequest, IceCandidate, MessageType, SignalMessage, Target, User, UserMessage, initiate_ice_restart}, video_packet_forwarder::VideoPacketForwarder, video_subscription::{QualityLayer, VideoSubscription, VideoSubscriptionMessage}};
+use crate::{Storage, SyncChannel, actor::{Actor, Addr, Ctx}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, keyframe_interceptor::KeyframeInterceptor, room::StreamQuality, user::{ConnectionRequest, IceCandidate, MessageType, SignalMessage, Target, User, UserMessage, initiate_ice_restart}, video_packet_forwarder::VideoPacketForwarder, video_subscription::{QualityLayer, VideoSubscription, VideoSubscriptionMessage}};
 
-pub struct Subscriber<S: SyncChannel> {
-    pub user: Addr<User<S>>,
+pub struct Subscriber<C: SyncChannel, S: Storage> {
+    pub user: Addr<User<C, S>>,
     pub pc: Arc<RTCPeerConnection>,
-    pub audio_subscriptions: HashMap<Uuid, Addr<AudioSubscription<S>>>,
+    pub audio_subscriptions: HashMap<Uuid, Addr<AudioPacketForwarder>>,
     pub video_subscriptions: HashMap<Uuid, Addr<VideoSubscription>>,
     pub disconnected: bool,
     pub retry_connect_attempts: u8,
@@ -14,8 +14,8 @@ pub struct Subscriber<S: SyncChannel> {
 
 const TARGET: Target = Target::Subscriber;
 
-impl<S: SyncChannel> Subscriber<S> {
-    pub async fn new(user: Addr<User<S>>) -> Result<Self, Error> {
+impl<C: SyncChannel, S: Storage> Subscriber<C, S> {
+    pub async fn new(user: Addr<User<C, S>>) -> Result<Self, Error> {
         let pc = create_peer().await?;
         let pc = Arc::new(pc);
         Ok(Self {
@@ -47,7 +47,7 @@ pub enum SubscriberMessage {
     Unsubscribe { peer_id: Uuid }
 }
 
-impl<S: SyncChannel> Actor for Subscriber<S> {
+impl<C: SyncChannel, S: Storage> Actor for Subscriber<C, S> {
     type Message = SubscriberMessage;
     async fn handle(&mut self, ctx: &mut Ctx<'_, Self>, msg: Self::Message) {
         match msg {
@@ -167,7 +167,7 @@ impl<S: SyncChannel> Actor for Subscriber<S> {
     }
 }
 
-impl<S: SyncChannel> Subscriber<S> {
+impl<C: SyncChannel, S: Storage> Subscriber<C, S> {
     async fn handle_ice_state_change(&mut self, state: RTCIceConnectionState) -> Result<(), Error> {
         match state {
             RTCIceConnectionState::Disconnected | RTCIceConnectionState::Failed => {
@@ -210,7 +210,7 @@ impl<S: SyncChannel> Subscriber<S> {
     }
     async fn connect_audio(&mut self, request: ConnectionRequest<AudioPacketForwarder>) -> Result<(), Error> {
         let peer_id = request.peer_id;
-        let audio_subscription = AudioSubscription::init(self.pc.clone(), self.user.clone(), request).await?;
+        let audio_subscription = AudioPacketForwarder::init(self.pc.clone(), request).await?;
         let audio_subscription = audio_subscription.start();
         self.audio_subscriptions.insert(peer_id, audio_subscription);
         Ok(())

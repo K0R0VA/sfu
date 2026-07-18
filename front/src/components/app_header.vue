@@ -10,7 +10,7 @@
               <path d="M2 12L12 17L22 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
           </div>
-          <div class="logo-text">
+          <div class="logo-text" @click="goHome">
             <span class="logo-title">Веб чат</span>
             <span class="logo-subtitle">SFU</span>
           </div>
@@ -28,6 +28,7 @@
 
 <script setup>
 import { computed } from 'vue';
+import { useRouter } from 'vue-router';
 
 const props = defineProps({
   roomStatus: String,
@@ -40,6 +41,13 @@ const props = defineProps({
     default: ''
   }
 });
+
+const router = useRouter();
+
+
+const goHome = () => {
+  router.push('/');
+}
 
 </script>
 <style src="../styles/header.css" scoped></style>

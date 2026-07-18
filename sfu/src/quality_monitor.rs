@@ -1,14 +1,19 @@
 use std::{sync::Arc, time::{Duration, Instant}};
 
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tokio::time::{interval};
+use tokio_stream::wrappers::IntervalStream;
+use uuid::Uuid;
 use webrtc::{peer_connection::RTCPeerConnection, stats::{StatsReport, StatsReportType}};
 
-use crate::{SyncChannel, actor::{Actor, Addr, StreamItem}, room::StreamQuality, user::{User, UserMessage}};
+use crate::{CurrentStats, Storage, StorageConfiguration, SyncChannel, actor::{Actor, Addr, StoppingExt, StreamItem}, error::Error, room::StreamQuality, user::{User, UserMessage}};
 
-pub struct QualityMonitor<S: SyncChannel> {
+pub struct QualityMonitor<C: SyncChannel, S: Storage> {
     publisher_connection: Arc<RTCPeerConnection>,
-    user: Addr<User<S>>,
+    id: Uuid,
+    user: Addr<User<C, S>>,
+    storage: S,
     last_stats_time: Instant,
     consecutive_high_signals: usize, 
     current_quality: Option<StreamQuality>, 
@@ -17,14 +22,6 @@ pub struct QualityMonitor<S: SyncChannel> {
     update_period: Duration,
 }
 
-#[derive(Default)]
-pub struct CurrentStats {
-    packet_loss: f64,
-    bitrate_bps: u64,
-    last_packets_received: u64,
-    last_bytes_received: u64,
-    last_nack_count: u64,
-}
 pub struct QualityThresholds {
     low_bitrate: u64,
     mid_bitrate: u64,
@@ -70,13 +67,14 @@ pub enum QualityMonitorMessage {
     Close
 }
 
-impl<S: SyncChannel> Actor for QualityMonitor<S> {
+impl<C: SyncChannel, S: Storage> Actor for QualityMonitor<C, S> {
     type Message = QualityMonitorMessage;
     async fn handle(&mut self, ctx: &mut crate::actor::Ctx<'_, Self>, m: Self::Message) {
         match m {
             QualityMonitorMessage::Ping  => {
                 const REQUIRED_STABLE_SIGNALS: usize = 3;
                 self.update_stats().await;
+                self.save_stats().await.ok_or_terminate(ctx);
                 if let Some(quality) = self.get_quality() {
                     let current_quality = match self.current_quality {
                         Some(current_quality) => current_quality,
@@ -120,7 +118,7 @@ impl<S: SyncChannel> Actor for QualityMonitor<S> {
         }
     }
     async fn starting(&mut self, ctx: &crate::actor::Ctx<'_, Self>) {
-        let stream = tokio_stream::wrappers::IntervalStream::new(interval(self.update_period));
+        let stream = IntervalStream::new(interval(self.update_period));
         ctx.addr.add_stream(stream, |_| StreamItem::Next(QualityMonitorMessage::Ping));
         tracing::info!("[QualityMonitor] starting")
     }
@@ -129,18 +127,23 @@ impl<S: SyncChannel> Actor for QualityMonitor<S> {
     }
 }
 
-impl<S: SyncChannel> QualityMonitor<S> {
-    pub fn new(publisher_connection: Arc<RTCPeerConnection>, user: Addr<User<S>>, thresholds: QualityThresholds) -> Self {
-        Self {
+impl<C: SyncChannel, S: Storage> QualityMonitor<C, S> {
+    pub async fn new(publisher_connection: Arc<RTCPeerConnection>, user: Addr<User<C, S>>, thresholds: QualityThresholds) -> Result<Self, Error> {
+        let configuration = <S::Configuration>::from_env()
+            .map_err(|e| Error::SystemError { message: e.to_string().into() })?;
+        let storage = S::connect(&configuration).await.map_err(|e| Error::SystemError { message: e.to_string().into() })?;
+        Ok(Self {
+            id: Uuid::new_v4(),
             publisher_connection,
             user,
+            storage,
             current_stats: CurrentStats::default(),
             thresholds,
             last_stats_time: Instant::now(),
             current_quality: None,
             consecutive_high_signals: 0,
             update_period: Duration::from_secs(10)
-        }
+        })
     }
     async fn update_stats(&mut self) {
         let stats = self.publisher_connection.get_stats().await;
@@ -162,7 +165,17 @@ impl<S: SyncChannel> QualityMonitor<S> {
         self.current_stats.last_packets_received = total_packets;
         self.current_stats.last_nack_count = total_nacks;
     }
-
+    async fn save_stats(&mut self) -> Result<(), Error> {
+        let item = crate::StorageItem { 
+            connection_id: self.id, 
+            stats: &self.current_stats, 
+            timestamp: Utc::now(),  
+        };
+        self.storage.insert(item)
+            .await
+            .map_err(|e| Error::SystemError { message: e.to_string().into() })?;
+        Ok(())
+    }
     // Вспомогательная функция для агрегации данных из отчетов
     fn collect_video_metrics(&self, stats: &StatsReport) -> (u64, u64, u64) {
         let mut total_bytes_received: u64 = 0;

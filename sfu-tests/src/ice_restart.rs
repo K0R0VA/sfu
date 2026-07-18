@@ -2,14 +2,14 @@ use std::time::Duration;
 
 use sfu::{actor::{Actor, StreamItem::Next}, error::Error, room::{ RoomMessage}, server::{Server, ServerMessage}, user::User};
 
-use crate::spawn_test_client;
+use crate::{FileStorage, spawn_test_client};
 
 #[tokio::test]
 async fn ice_restart() -> Result<(), Error> {
     tracing_subscriber::fmt::fmt()
         .with_env_filter("webrtc=ERROR,webrtc_ice=ERROR,api_gateway=INFO,sfu=INFO")
         .init();
-    let server: sfu::actor::Addr<Server<_>> = Server::default().start();
+    let server: sfu::actor::Addr<Server<_, FileStorage>> = Server::default().start();
     let (tx, rx) = tokio::sync::oneshot::channel();
     let _ = server.send(ServerMessage::CreateRoom { name: "".to_string(), response_channel: tx });
     let (_, room) = rx.await.unwrap();

@@ -2,10 +2,10 @@ use std::{collections::HashMap};
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::{SyncChannel, actor::{Actor, Addr, Ctx}, error::Error, room::{Room, RoomMessage}, user::User};
+use crate::{Storage, SyncChannel, actor::{Actor, Addr, Ctx}, error::Error, room::{Room, RoomMessage}, user::User};
 
-pub struct Server<S: SyncChannel> {
-    rooms: HashMap<Uuid, (String, Addr<Room<S>>)>
+pub struct Server<C: SyncChannel, S: Storage> {
+    rooms: HashMap<Uuid, (String, Addr<Room<C, S>>)>
 }
 
 #[derive(Serialize)]
@@ -14,13 +14,13 @@ pub struct RoomResponse {
     name: String
 }
 
-impl<S: SyncChannel> Addr<Server<S>> {
-    pub async fn create_room(&self, name: String) -> Result<(Uuid, Addr<Room<S>>), Error> {
+impl<C: SyncChannel, S: Storage> Addr<Server<C, S>> {
+    pub async fn create_room(&self, name: String) -> Result<(Uuid, Addr<Room<C, S>>), Error> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let _ = self.send(ServerMessage::CreateRoom { name, response_channel: tx }).await;
         Ok(rx.await?)
     }
-    pub async fn get_room(&self, room_id: Uuid) -> Result<(String, Addr<Room<S>>), Error> {
+    pub async fn get_room(&self, room_id: Uuid) -> Result<(String, Addr<Room<C, S>>), Error> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let _ = self.send(ServerMessage::GetRoomAddr { room_id, response_channel: tx } ).await;
         let room = rx.await?.ok_or(Error::SystemError { message: "Room not found".into() })?;
@@ -34,7 +34,7 @@ impl<S: SyncChannel> Addr<Server<S>> {
     }
 }
 
-impl<S: SyncChannel> Default for Server<S> {
+impl<C: SyncChannel, S: Storage> Default for Server<C, S> {
     fn default() -> Self {
         Self {
             rooms: HashMap::new()
@@ -44,21 +44,21 @@ impl<S: SyncChannel> Default for Server<S> {
 
 
 
-pub enum ServerMessage<S: SyncChannel> {
-    CreateRoom { name: String, response_channel: tokio::sync::oneshot::Sender<(Uuid, Addr<Room<S>>)> },
+pub enum ServerMessage<C: SyncChannel, S: Storage> {
+    CreateRoom { name: String, response_channel: tokio::sync::oneshot::Sender<(Uuid, Addr<Room<C, S>>)> },
     DeleteRoom { room_id: Uuid },
-    GetRoomAddr { room_id: Uuid, response_channel: tokio::sync::oneshot::Sender<Option<(String, Addr<Room<S>>)>> },
+    GetRoomAddr { room_id: Uuid, response_channel: tokio::sync::oneshot::Sender<Option<(String, Addr<Room<C, S>>)>> },
     GetRooms { response_channel: tokio::sync::oneshot::Sender<Vec<RoomResponse>> },
-    JoinRoom { room_id: Uuid, user_id: Uuid, addr: Addr<User<S>> },
+    JoinRoom { room_id: Uuid, user_id: Uuid, addr: Addr<User<C, S>> },
 }
 
 
-impl<S: SyncChannel> Actor for Server<S> {
-    type Message = ServerMessage<S>;
+impl<C: SyncChannel, S: Storage> Actor for Server<C, S> {
+    type Message = ServerMessage<C, S>;
     async fn handle(&mut self, ctx: &mut Ctx<'_, Self>, msg: Self::Message) {
         match msg {
             ServerMessage::CreateRoom { name, response_channel } => {
-                let new_room = Room::new(ctx.addr.clone());
+                let new_room = Room::new();
                 let room_id = new_room.id;
                 let room_addr = new_room.start();
                 self.rooms.insert(room_id, (name, room_addr.clone()));

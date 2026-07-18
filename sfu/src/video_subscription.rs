@@ -65,7 +65,7 @@ impl Actor for VideoSubscription {
     type Message = VideoSubscriptionMessage;
     async fn handle(&mut self, ctx: &mut crate::actor::Ctx<'_, Self>, m: Self::Message) {
         match m {
-            VideoSubscriptionMessage::StartLowQuality => {
+            VideoSubscriptionMessage::StartLowQuality => if self.active_quality != StreamQuality::High {
                 let Some((quality , quality_layer)) = self.quality_layers.iter().next() else { return; };
                 self.waiting_high_quality = false;
                 self.packet_forwarder.send(VideoPacketForwarderMessage::Start {

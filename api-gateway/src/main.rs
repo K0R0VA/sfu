@@ -1,7 +1,8 @@
 use axum::{Json, extract::{Path, ws::Message}, response::{ Response}, routing::post};
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use serde::{Deserialize, Serialize};
-use sfu::{SyncChannel, actor::{self, Actor, Addr}, server::{Server, ServerMessage}, user::{SignalMessage, SyncMessage, User, UserMessage::{self}}};
+use sfu::{Storage, StorageConfiguration, SyncChannel, actor::{self, Actor, Addr}, server::{Server, ServerMessage}, user::{SignalMessage, SyncMessage, User, UserMessage::{self}}};
+use tokio::{fs::File, io::AsyncWriteExt};
 use tower_http::services::{ServeDir, ServeFile};
 
 use axum::{
@@ -36,7 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn ws_handler(
     room_id: Path<Uuid>,
     ws: WebSocketUpgrade,
-    State(server): State<Addr<Server<WebsocketSyncChannel>>>,
+    State(server): State<Addr<Server<WebsocketSyncChannel, FileStorage>>>,
 ) -> Response {
     let room_id = room_id.0;
     ws.on_upgrade(move |socket| async move {
@@ -47,7 +48,7 @@ async fn ws_handler(
 }
 
 async fn rooms(
-    State(server): State<Addr<Server<WebsocketSyncChannel>>>,
+    State(server): State<Addr<Server<WebsocketSyncChannel, FileStorage>>>,
 ) -> Response {
     let rooms = match server.get_rooms().await {
         Ok(rooms) => rooms,
@@ -67,7 +68,7 @@ pub struct CreateRoomResponse {
 }
 
 async fn create_room(
-    State(server): State<Addr<Server<WebsocketSyncChannel>>>,
+    State(server): State<Addr<Server<WebsocketSyncChannel, FileStorage>>>,
     Json(CreateRoomRequest { name }): Json<CreateRoomRequest>,
 ) -> Response {
     let result = server
@@ -84,7 +85,7 @@ async fn create_room(
 async fn try_connect_websocket(
     room_id: Uuid,
     ws: WebSocket,
-    server: Addr<Server<WebsocketSyncChannel>>
+    server: Addr<Server<WebsocketSyncChannel, FileStorage>>
 ) -> Result<(), sfu::error::Error> {
     let (ws_tx, ws_rx) = ws.split();
     let mut sync_channel = WebsocketSyncChannel {socket: ws_tx};
@@ -93,12 +94,12 @@ async fn try_connect_websocket(
     let (room_name, room) = match rx.await? {
         Some(room) => room,
         None => {
-            sync_channel.send("Room not found".into()).await?;
+            sync_channel.send("Room not found".into()).await;
             return Ok(());
         }
     };
     let message = serde_json::to_string(&SignalMessage::RoomInfo { name: room_name })?;
-    sync_channel.send(message).await?;
+    sync_channel.send(message).await;
     let user = User::new(sync_channel, room.clone()).await?;
     let user_id = user.peer_id;
     let addr = user.start();
@@ -126,10 +127,43 @@ pub struct WebsocketSyncChannel {
 
 impl SyncChannel for WebsocketSyncChannel {
     type Item = String;
-    async fn send(&mut self, message: String) -> Result<(), sfu::error::Error> {
+    type Error = axum::Error;
+    async fn send(&mut self, message: String) -> Result<(), Self::Error> {
         self.socket.send(Message::Text(message.into()))
-            .await
-            .map_err(|e| sfu::error::Error::SystemError { message: e.to_string().into() })?;
+            .await?;
+        Ok(())
+    }
+}
+
+pub struct FileStorage {
+    file: tokio::fs::File
+}
+pub struct FileConfiguration { path: String }
+
+impl StorageConfiguration for FileConfiguration {
+    type Error = std::env::VarError;
+    fn from_env() -> Result<Self, Self::Error> {
+        let output_dir = std::env::var("output_dir")?;
+        let file_name = format!("{}.txt", Uuid::new_v4());
+        let path = format!("{output_dir}/{file_name}");
+        Ok(Self {
+            path
+        })
+    }
+}
+ 
+impl Storage for FileStorage {
+    type Configuration = FileConfiguration;
+    type Error = std::io::Error;
+    async fn connect(configuration: &Self::Configuration) -> Result<Self, Self::Error> {
+        let file = File::create_new(&configuration.path).await?;
+        Ok(Self {
+            file
+        })
+    }
+    async fn insert(&mut self, item: sfu::StorageItem<'_>) -> Result<(), Self::Error> {
+        let raw = format!("[{} {}] {:?}", item.connection_id, item.timestamp, item.stats, );
+        self.file.write_all(raw.as_bytes()).await?;
         Ok(())
     }
 }

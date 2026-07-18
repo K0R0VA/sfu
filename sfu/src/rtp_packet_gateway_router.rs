@@ -1,4 +1,4 @@
-use std::{collections::HashSet, marker::PhantomData, sync::{Arc}};
+use std::{collections::HashSet, marker::PhantomData, sync::Arc};
 use webrtc::{peer_connection::RTCPeerConnection, rtcp::payload_feedbacks::full_intra_request::{FirEntry, FullIntraRequest}, rtp::packet::Packet, track::track_remote::TrackRemote};
 use crate::{actor::{Actor, Addr, StoppingExt}, error::Error, room::StreamQuality,};
 
@@ -13,7 +13,7 @@ pub struct RtpPacketGatewayRouter<A: Actor> {
 impl<A: Actor> RtpPacketGatewayRouter<A> where A::Message: From<(StreamQuality, Packet)>  {
     pub fn spawn(track: Arc<TrackRemote>, stream_quality: StreamQuality, ssrc: u32, pc: Arc<RTCPeerConnection>) -> Addr<Self> {
         let this: Addr<RtpPacketGatewayRouter<A>> = Self {subscriptions: HashSet::new(), ssrc, stream_quality, pc, fir_sequence: 0}
-            .start_with_capacity(2048);
+            .start_with_capacity(32);
         let receiver = this.clone();
         tokio::spawn(async move {
             loop {
@@ -73,7 +73,7 @@ impl<A: Actor> Actor for RtpPacketGatewayRouter<A>
         }
     }
     async fn stopping(self, _ctx: &crate::actor::Ctx<'_, Self>) {
-        tracing::info!("[RtpPacketForwarder] Stopping");
+        tracing::info!("[RtpPacketGatewayRouter] Stopping");
     }
 }
 

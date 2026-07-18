@@ -1,7 +1,7 @@
-use std::{collections::HashSet,  fs::File, io::BufReader, str::FromStr, sync::Arc, time::Duration};
+use std::{collections::HashSet, fs::File, io::BufReader, str::FromStr, sync::{Arc}, time::Duration};
 
-use sfu::{SyncChannel, create_peer, error::Error, user::{IceCandidate, SignalMessage}};
-use tokio::{sync::Mutex};
+use sfu::{Storage, StorageConfiguration, SyncChannel, create_peer, error::Error, user::{IceCandidate, SignalMessage, Target}};
+use tokio::{io::AsyncWriteExt, sync::Mutex};
 use uuid::Uuid;
 use webrtc::{ice_transport::ice_candidate::RTCIceCandidateInit, media::{Sample, io::ivf_reader::{ IVFReader}}, peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription}, rtp_transceiver::{RTCRtpTransceiverInit, rtp_codec::RTCRtpCodecCapability, rtp_transceiver_direction::RTCRtpTransceiverDirection}, track::track_local::track_local_static_sample::TrackLocalStaticSample
 };
@@ -99,15 +99,50 @@ impl TestClient {
         }));
         Ok(())
     }
+    async fn send_track(&mut self, peer_id: Uuid) -> Result<(), Error> {
+        self.peer_id = Some(peer_id);
+        self.add_track().await?;
+        self.markers.send_offer = true;
+        self.sfu_tx.send(SignalMessage::Connect { device_type: sfu::quality_monitor::DeviceType::Desktop }).await.unwrap();
+        Ok(())
+    }
+    async fn handle_offer(&self, sdp: String) -> Result<(), Error> {
+        let description = RTCSessionDescription::offer(sdp)?;
+        self.subscriber_pc.set_remote_description(description).await?;
+        let answer = self.subscriber_pc.create_answer(None).await?;
+        self.subscriber_pc.set_local_description(answer.clone()).await?;
+        let response = SignalMessage::Rtc { 
+            target: sfu::user::Target::Subscriber, 
+            message_type: sfu::user::MessageType::Answer { sdp: answer.sdp }
+        };
+        self.sfu_tx.send(response).await.unwrap();
+        Ok(())
+    }
+    async fn handle_ice_restart(&self, target: Target, pc: &RTCPeerConnection, sdp: String) -> Result<(), Error> {
+        let description = RTCSessionDescription::offer(sdp)?;
+        pc.set_remote_description(description).await?;
+        let answer = pc.create_answer(None).await?;
+        pc.set_local_description(answer.clone()).await?;
+        let response = SignalMessage::Rtc { 
+            target, 
+            message_type: sfu::user::MessageType::Answer { sdp: answer.sdp }
+        };
+        self.sfu_tx.send(response).await.unwrap();
+        Ok(())
+    }
+    async fn handle_ice_candidate(&self, pc: &RTCPeerConnection, IceCandidate { candidate, sdp_mid, sdp_mline_index }: IceCandidate) -> Result<(), Error> {
+        pc.add_ice_candidate(RTCIceCandidateInit {
+            candidate,
+            sdp_mid,
+            sdp_mline_index, 
+            ..Default::default()
+        }).await?;
+        Ok(())
+    }
     pub async fn handle_message(&mut self) -> Result<(), Error> {
         if let Some(message) = self.sfu_rx.recv().await {
             match message {
-                SignalMessage::Welcome { peer_id } => {
-                    self.peer_id = Some(peer_id);
-                    self.add_track().await?;
-                    self.markers.send_offer = true;
-                    self.sfu_tx.send(SignalMessage::Connect { device_type: sfu::quality_monitor::DeviceType::Desktop }).await.unwrap();
-                }
+                SignalMessage::Welcome { peer_id } => self.send_track(peer_id).await?,
                 SignalMessage::PeerLeft { peer_id }  => {
                     let mut peers = self.connected_peers.lock().await;
                     peers.remove(&peer_id);
@@ -118,13 +153,8 @@ impl TestClient {
                         sfu::user::Target::Subscriber => &self.subscriber_pc
                     };
                     match message_type {
-                        sfu::user::MessageType::Candidate { candidate: IceCandidate { candidate, sdp_mid, sdp_mline_index } } => {
-                            pc.add_ice_candidate(RTCIceCandidateInit {
-                                candidate,
-                                sdp_mid,
-                                sdp_mline_index, 
-                                ..Default::default()
-                            }).await?;
+                        sfu::user::MessageType::Candidate { candidate } => {
+                            self.handle_ice_candidate(pc, candidate).await?;
                             self.markers.ice_connected = true;
                         }
                         sfu::user::MessageType::Answer { sdp } => {
@@ -133,35 +163,15 @@ impl TestClient {
                             self.markers.receive_answer = true;
                         }
                         sfu::user::MessageType::Offer { sdp } => {
-                            tracing::info!("receive offer");
-                            let description = RTCSessionDescription::offer(sdp)?;
-                            self.subscriber_pc.set_remote_description(description).await?;
-                            let answer = self.subscriber_pc.create_answer(None).await?;
-                            self.subscriber_pc.set_local_description(answer.clone()).await?;
-                            let response = SignalMessage::Rtc { 
-                                target: sfu::user::Target::Subscriber, 
-                                message_type: sfu::user::MessageType::Answer { sdp: answer.sdp }
-                            };
-                            self.sfu_tx.send(response).await.unwrap();
+                            self.handle_offer(sdp).await?;
                             self.markers.receive_offer = true;
                         },
-                        sfu::user::MessageType::IceRestart { sdp } => {
-                            let description = RTCSessionDescription::offer(sdp)?;
-                            pc.set_remote_description(description).await?;
-                            let answer = pc.create_answer(None).await?;
-                            pc.set_local_description(answer.clone()).await?;
-                            let response = SignalMessage::Rtc { 
-                                target, 
-                                message_type: sfu::user::MessageType::Answer { sdp: answer.sdp }
-                            };
-                            self.sfu_tx.send(response).await.unwrap();
-                        }
+                        sfu::user::MessageType::IceRestart { sdp } => self.handle_ice_restart(target, pc, sdp).await?
                     }
                 },
                 _ => {}
             }
         }
-
         Ok(())
     }
     async fn add_track(&mut self) -> Result<(), Error> {
@@ -247,10 +257,44 @@ pub struct TestSyncChannel {
 
 impl SyncChannel for TestSyncChannel {
     type Item = SignalMessage;
-    async fn send(&mut self, message: SignalMessage) -> Result<(), sfu::error::Error> {
+    type Error = tokio::sync::mpsc::error::SendError<SignalMessage>;
+    async fn send(&mut self, message: SignalMessage) -> Result<(), Self::Error> {
         self.channel.send(message)
-            .await
-            .map_err(|_| sfu::error::Error::SystemError { message: "channel died".into() })?;
+            .await?;
+        Ok(())
+    }
+}
+
+pub struct FileStorage {
+    file: tokio::fs::File
+}
+
+pub struct FileConfiguration { path: String }
+
+impl StorageConfiguration for FileConfiguration {
+    type Error = std::env::VarError;
+    fn from_env() -> Result<Self, Self::Error> {
+        let output_dir = std::env::var("output_dir")?;
+        let file_name = format!("{}.txt", Uuid::new_v4());
+        let path = format!("{output_dir}/{file_name}");
+        Ok(Self {
+            path
+        })
+    }
+}
+ 
+impl Storage for FileStorage {
+    type Configuration = FileConfiguration;
+    type Error = std::io::Error;
+    async fn connect(configuration: &Self::Configuration) -> Result<Self, Self::Error> {
+        let file = tokio::fs::File::create_new(&configuration.path).await?;
+        Ok(Self {
+            file
+        })
+    }
+    async fn insert(&mut self, item: sfu::StorageItem<'_>) -> Result<(), Self::Error> {
+        let raw = format!("[{} {}] {:?}", item.connection_id, item.timestamp, item.stats, );
+        self.file.write_all(raw.as_bytes()).await?;
         Ok(())
     }
 }

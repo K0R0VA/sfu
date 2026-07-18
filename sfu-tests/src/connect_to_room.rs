@@ -2,14 +2,14 @@ use std::{sync::{Arc, atomic::{AtomicU8, Ordering::Relaxed}}};
 
 use sfu::{actor::{Actor, StreamItem::Next}, error::Error, room::{RoomMessage}, server::{Server, ServerMessage}, user::User};
 
-use crate::spawn_test_client;
+use crate::{FileStorage, spawn_test_client};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn connect_one_user_to_room() -> Result<(), Error> {
     tracing_subscriber::fmt::fmt()
         .with_env_filter("webrtc=ERROR,webrtc_ice=ERROR")
         .init();
-    let server: sfu::actor::Addr<Server<_>> = Server::default().start();
+    let server: sfu::actor::Addr<Server<_, FileStorage>> = Server::default().start();
     let (tx, rx) = tokio::sync::oneshot::channel();
     let _ = server.send(ServerMessage::CreateRoom { name: "".to_string(), response_channel: tx }).await;
     let (_, room) = rx.await.unwrap();
@@ -34,7 +34,7 @@ async fn connect_two_users_to_room() -> Result<(), Error> {
     tracing_subscriber::fmt::fmt()
         .with_env_filter("webrtc=ERROR,webrtc_ice=ERROR")
         .init();
-    let server: sfu::actor::Addr<Server<_>> = Server::default().start();
+    let server: sfu::actor::Addr<Server<_, FileStorage>> = Server::default().start();
     let (tx, rx) = tokio::sync::oneshot::channel();
     let _ = server.send(ServerMessage::CreateRoom { name: "".to_string(), response_channel: tx }).await;
     let (_, room) = rx.await.unwrap();
@@ -99,7 +99,7 @@ async fn connect_many_users_to_room() -> Result<(), Error> {
     tracing_subscriber::fmt::fmt()
         .with_env_filter("webrtc=ERROR,webrtc_ice=ERROR")
         .init();
-    let server: sfu::actor::Addr<Server<_>> = Server::default().start();
+    let server: sfu::actor::Addr<Server<_, FileStorage>> = Server::default().start();
     let (tx, rx) = tokio::sync::oneshot::channel();
     let _ = server.send(ServerMessage::CreateRoom { name: "".to_string(), response_channel: tx }).await;
     let (_, room) = rx.await.unwrap();
