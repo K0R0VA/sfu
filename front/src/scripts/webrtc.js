@@ -97,17 +97,16 @@ export class WebrtcConnection {
         let is_any_stream = video_stream || audio_stream;
         if (video_stream) {
             const deviceType = getDeviceType();
-            const isMobile = deviceType === 'mobile';
             const bitrateSettings = {
-                low: 400_000,      // 240p
-                mid: 2_500_000,    // 540p
-                high: 4_000_000    // 1080p30 - нормальное качество
+                low: 400_000,      
+                mid: 2_000_000,   
+                high: 4_000_000   
             };
             const encodings = [
                 {
                     rid: 'low',
                     maxBitrate: bitrateSettings.low,
-                    scaleResolutionDownBy: getRoundedResolution(BASE_HEIGHT, BASE_WIDTH, 3.0),
+                    scaleResolutionDownBy: getRoundedResolution(BASE_HEIGHT, BASE_WIDTH, 4.0),
                     maxFramerate: 24,
                 },
                 {
@@ -124,7 +123,7 @@ export class WebrtcConnection {
                 }
             ];
             const video_track = video_stream.getVideoTracks()[0];
-            const transceiver = this.publisher_pc.addTransceiver(video_track, {
+            this.video_transceiver = this.publisher_pc.addTransceiver(video_track, {
                 direction: 'sendonly',
                 sendEncodings: encodings
             });
@@ -132,7 +131,7 @@ export class WebrtcConnection {
             if (capabilities && capabilities.codecs) {
                 const h264Codecs = capabilities.codecs.filter(c => c.mimeType.toLowerCase() === 'video/h264');
                 const otherCodecs = capabilities.codecs.filter(c => c.mimeType.toLowerCase() !== 'video/h264');
-                transceiver.setCodecPreferences([...h264Codecs, ...otherCodecs]);
+                this.video_transceiver.setCodecPreferences([...h264Codecs, ...otherCodecs]);
             }
         }
         if (audio_stream) {
@@ -149,7 +148,6 @@ export class WebrtcConnection {
                 sdp: offer.sdp
             }));
         }
-        
     }
     async receive_answer(message) {
         if (this.publisher_pc.signalingState === "have-local-offer") {

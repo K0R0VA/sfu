@@ -35,9 +35,9 @@ impl From<DeviceType> for QualityThresholds {
     fn from(value: DeviceType) -> Self {
         match value {
             DeviceType::Desktop => QualityThresholds {
-                low_bitrate: 150_000,
-                mid_bitrate: 350_000,
-                high_bitrate: 700_00,
+                low_bitrate: 400_000,
+                mid_bitrate: 2_500_000,
+                high_bitrate: 4_000_000,
                 low_loss: 15.0,
                 mid_loss: 8.0,
                 high_loss: 2.0,
@@ -142,7 +142,7 @@ impl<C: SyncChannel, S: Storage> QualityMonitor<C, S> {
             last_stats_time: Instant::now(),
             current_quality: None,
             consecutive_high_signals: 0,
-            update_period: Duration::from_secs(10)
+            update_period: Duration::from_secs(1)
         })
     }
     async fn update_stats(&mut self) {

@@ -1,7 +1,10 @@
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
+use tokio::sync::Notify;
 use uuid::Uuid;
-use webrtc::{peer_connection::{RTCPeerConnection, offer_answer_options::RTCOfferOptions, }, rtp::packet::Packet, };
-use crate::{Storage, SyncChannel, actor::{Actor, Addr, Ctx, WeakAddr}, audio_packet_forwarder::AudioPacketForwarder, error::Error, keyframe_interceptor::KeyframeInterceptor, publisher_pc::{Publisher, PublisherMessage}, quality_monitor::DeviceType, room::{MimeType, Room, RoomMessage, StreamQuality}, rtp_packet_gateway_router::RtpPacketGatewayRouter, subscriber_pc::{Subscriber, SubscriberMessage}, video_packet_forwarder::VideoPacketForwarder};
+use webrtc::{peer_connection::{RTCPeerConnection, offer_answer_options::RTCOfferOptions, },  };
+use crate::{Storage, SyncChannel, actor::{Actor, Addr, Ctx, StoppingExt, WeakAddr}, audio_packet_forwarder::AudioPacketForwarder, error::Error, keyframe_interceptor::KeyframeInterceptor, publisher::{Publisher, PublisherMessage}, quality_monitor::DeviceType, room::{Codek, Room, RoomMessage, StreamQuality}, rtp_packet_gateway_router::{AudioRouterContext, RouterContext, RtpPacketGatewayRouter, RtpPacketMessage, VideoRouterContext}, subscriber::{Subscriber, SubscriberMessage}, video_packet_forwarder::VideoPacketForwarder};
 
 pub struct User<C: SyncChannel, S: Storage> {
     pub room: Addr<Room<C, S>>,
@@ -29,8 +32,8 @@ pub enum UserMessage {
     SignalMessage(SignalMessage),
     SwitchQualityLayer { quality: StreamQuality },
     SyncMessage(SyncMessage),
-    ConnectAudio(ConnectionRequest<AudioPacketForwarder>),
-    ConnectVideo { request: ConnectionRequest<VideoPacketForwarder>, quality: StreamQuality , keyframe_interceptor: Addr<KeyframeInterceptor>},
+    ConnectAudio(ConnectionRequest<AudioPacketForwarder, AudioRouterContext>),
+    ConnectVideo { request: ConnectionRequest<VideoPacketForwarder, VideoRouterContext>, quality: StreamQuality , keyframe_interceptor: Addr<KeyframeInterceptor>, wake_notification: Arc<Notify>},
     Unsubscribe {
         user_id: Uuid,
     },
@@ -43,10 +46,10 @@ pub enum SyncMessage {
     Error(String)
 }
 
-pub struct ConnectionRequest<T: Actor> where T::Message: From<(StreamQuality, Packet)>  {
+pub struct ConnectionRequest<T: Actor, R: RouterContext<T>> where T::Message: From<RtpPacketMessage>  {
     pub peer_id: Uuid,
-    pub gateway_router: Addr<RtpPacketGatewayRouter<T>>,
-    pub codec_mime_type: MimeType,
+    pub gateway_router: Addr<RtpPacketGatewayRouter<T, R>>,
+    pub codec_mime_type: Codek,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -60,32 +63,28 @@ impl<C: SyncChannel, S: Storage> Actor for User<C, S> {
     async fn handle(&mut self, ctx: &mut Ctx<'_, Self>, msg: Self::Message) {
         match msg {
             UserMessage::SignalMessage(message) => {
-                if let Err(e) = self.send_ws_message(message).await {
-                    tracing::error!("👤 [UserActor] UserMessage::Websocket {:?}", e);
-                    self.stop(ctx).await;
-                }
+                self.send_ws_message(message).await.ok_or_terminate(ctx);
             }
             UserMessage::SwitchQualityLayer { quality } => {
-                let _ = self.subscriber.try_send(SubscriberMessage::SwitchQualityLayer { quality }).await;
+                self.subscriber.try_send(SubscriberMessage::SwitchQualityLayer { quality }).await.ok_or_terminate(ctx);
+                self.send_ws_message(SignalMessage::ConnectionQuality { quality }).await.ok_or_terminate(ctx);
             }
             UserMessage::SyncMessage(message) => {
-                if let Err(e) = self.handle_ws_message(ctx, message).await {
-                    tracing::error!("👤 [UserActor] UserMessage::Websocket {:?}", e);
-                    self.stop(ctx).await;
-                }
+                self.handle_ws_message(ctx, message).await.ok_or_terminate(ctx);
             },
             UserMessage::ConnectAudio(request) => {
-                let _ = self.subscriber.try_send(SubscriberMessage::ConnectAudio(request)).await;
+                self.subscriber.try_send(SubscriberMessage::ConnectAudio(request))
+                    .await
+                    .ok_or_terminate(ctx);
             },
-            UserMessage::ConnectVideo {quality, request, keyframe_interceptor} => {
-                let _ = self.subscriber.try_send(SubscriberMessage::ConnectVideo {quality, request, keyframe_interceptor}).await;
+            UserMessage::ConnectVideo {quality, request, keyframe_interceptor, wake_notification} => {
+                self.subscriber.try_send(SubscriberMessage::ConnectVideo {quality, request, keyframe_interceptor, wake_notification})
+                    .await
+                    .ok_or_terminate(ctx);
             },
             UserMessage::RoomClosed => self.stop(ctx).await,
             UserMessage::Unsubscribe { user_id: speaker_id } => {
-                if let Err(e) = self.unsubscribe(speaker_id).await {
-                    tracing::error!("👤 [UserActor] UserMessage::DisconnectFromUser {:?}", e);
-                    self.stop(ctx).await;
-                }
+                self.unsubscribe(speaker_id).await.ok_or_terminate(ctx);
             }
         }
     }   
@@ -113,6 +112,7 @@ pub enum SignalMessage {
         message_type: MessageType,
     },
     RoomInfo { name: String, },
+    ConnectionQuality { quality: StreamQuality },
     Welcome { peer_id: Uuid, },
     PeerLeft { peer_id: Uuid },
     Connect { device_type: DeviceType },

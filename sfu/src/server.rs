@@ -55,7 +55,7 @@ pub enum ServerMessage<C: SyncChannel, S: Storage> {
 
 impl<C: SyncChannel, S: Storage> Actor for Server<C, S> {
     type Message = ServerMessage<C, S>;
-    async fn handle(&mut self, ctx: &mut Ctx<'_, Self>, msg: Self::Message) {
+    async fn handle(&mut self, _ctx: &mut Ctx<'_, Self>, msg: Self::Message) {
         match msg {
             ServerMessage::CreateRoom { name, response_channel } => {
                 let new_room = Room::new();

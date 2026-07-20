@@ -1,5 +1,19 @@
 <template>
   <div class="room-view">
+    <!-- Панель управления профилем сети -->
+    <div class="network-controls">
+      <label for="network-profile">Эмуляция сети:</label>
+      <select 
+        id="network-profile" 
+        v-model="selectedProfile" 
+        @change="applyNetworkProfile"
+      >
+        <option value="original">Без ограничений (High)</option>
+        <option value="mid">Mid</option>
+        <option value="low">Low</option>
+      </select>
+    </div>
+
     <VideoGrid 
       :users="users"
       @set-video-src="setVideoSrc"
@@ -31,6 +45,8 @@ const users = computed(() => {
   }));
 });
 
+const selectedProfile = ref('original');
+
 // Подключение к комнате
 const connectToRoom = () => {
   if (websocket) {
@@ -51,6 +67,46 @@ const handleBeforeUnload = (event) => {
   if (is_in_room.value) {
     event.preventDefault();
     event.returnValue = 'Вы уверены, что хотите покинуть комнату?';
+  }
+};
+
+// Функция изменения параметров WebRTC сендера
+const applyNetworkProfile = async () => {
+  try {
+    const video_sender = websocket.peer_connection.video_transceiver.sender;
+    if (!video_sender) return;
+
+    const parameters = video_sender.getParameters();
+    
+    if (!parameters.encodings || parameters.encodings.length === 0) {
+      parameters.encodings = [{}];
+    }
+    const low_layer = parameters.encodings[0];
+    const mid_layer = parameters.encodings[1];
+    const high_layer = parameters.encodings[2];
+
+    switch (selectedProfile.value) {
+      case 'low':
+        low_layer.maxBitrate = 150_000; 
+        mid_layer.active = false; 
+        high_layer.active = false; 
+        break;
+      case 'mid':
+        parameters.encodings[0].maxBitrate = 400_000;
+        mid_layer.active = true; 
+        high_layer.active = false; 
+        break;
+      case 'original':
+      default:
+        // Полностью очищаем лимиты для возврата к дефолту браузера
+        parameters.encodings[0].maxBitrate = 400_000;
+        mid_layer.active = true; 
+        high_layer.active = true; 
+        break;
+    }
+    await video_sender.setParameters(parameters);
+  } catch (error) {
+    console.error('[WebRTC] Ошибка изменения параметров трека:', error);
   }
 };
 

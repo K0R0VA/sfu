@@ -86,7 +86,6 @@ export class UserWebsocket {
         };
         this.ws.onclose = () => {
             console.log("🔴 Соединение закрыто");
-            this.isConnecting.value = false;
             this.room_status.value = "Соединение потеряно";
         };
     }

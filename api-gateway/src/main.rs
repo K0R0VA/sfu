@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 24)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    dotenv::dotenv().ok();
     tracing_subscriber::fmt::fmt()
         .with_env_filter("webrtc=ERROR,webrtc_ice=ERROR,api_gateway=INFO,sfu=INFO")
         .init();
@@ -94,12 +95,12 @@ async fn try_connect_websocket(
     let (room_name, room) = match rx.await? {
         Some(room) => room,
         None => {
-            sync_channel.send("Room not found".into()).await;
+            sync_channel.send("Room not found".into()).await.unwrap();
             return Ok(());
         }
     };
     let message = serde_json::to_string(&SignalMessage::RoomInfo { name: room_name })?;
-    sync_channel.send(message).await;
+    sync_channel.send(message).await.unwrap();
     let user = User::new(sync_channel, room.clone()).await?;
     let user_id = user.peer_id;
     let addr = user.start();
@@ -143,7 +144,7 @@ pub struct FileConfiguration { path: String }
 impl StorageConfiguration for FileConfiguration {
     type Error = std::env::VarError;
     fn from_env() -> Result<Self, Self::Error> {
-        let output_dir = std::env::var("output_dir")?;
+        let output_dir = std::env::var("OUTPUT_DIR")?;
         let file_name = format!("{}.txt", Uuid::new_v4());
         let path = format!("{output_dir}/{file_name}");
         Ok(Self {
@@ -162,7 +163,7 @@ impl Storage for FileStorage {
         })
     }
     async fn insert(&mut self, item: sfu::StorageItem<'_>) -> Result<(), Self::Error> {
-        let raw = format!("[{} {}] {:?}", item.connection_id, item.timestamp, item.stats, );
+        let raw = format!("\n[{} {}] {:?}", item.connection_id, item.timestamp, item.stats, );
         self.file.write_all(raw.as_bytes()).await?;
         Ok(())
     }

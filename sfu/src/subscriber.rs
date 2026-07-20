@@ -1,13 +1,15 @@
 use std::{collections::HashMap, sync::{Arc}};
+use tokio::sync::Notify;
 use uuid::Uuid;
 use webrtc::{ice_transport::{ice_candidate::RTCIceCandidateInit, ice_connection_state::RTCIceConnectionState}, peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription, signaling_state::RTCSignalingState}};
-use crate::{Storage, SyncChannel, actor::{Actor, Addr, Ctx}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, keyframe_interceptor::KeyframeInterceptor, room::StreamQuality, user::{ConnectionRequest, IceCandidate, MessageType, SignalMessage, Target, User, UserMessage, initiate_ice_restart}, video_packet_forwarder::VideoPacketForwarder, video_subscription::{QualityLayer, VideoSubscription, VideoSubscriptionMessage}};
+use crate::{Storage, SyncChannel, actor::{Actor, Addr, Ctx}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, keyframe_interceptor::KeyframeInterceptor, room::StreamQuality, rtp_packet_gateway_router::{AudioRouterContext, VideoRouterContext}, user::{ConnectionRequest, IceCandidate, MessageType, SignalMessage, Target, User, UserMessage, initiate_ice_restart}, video_layer_manager::{QualityLayer, VideoLayerManager, VideoLayerManagerMessage}, video_packet_forwarder::VideoPacketForwarder};
 
 pub struct Subscriber<C: SyncChannel, S: Storage> {
     pub user: Addr<User<C, S>>,
     pub pc: Arc<RTCPeerConnection>,
     pub audio_subscriptions: HashMap<Uuid, Addr<AudioPacketForwarder>>,
-    pub video_subscriptions: HashMap<Uuid, Addr<VideoSubscription>>,
+    pub video_subscriptions: HashMap<Uuid, Addr<VideoLayerManager>>,
+    pub current_quality: StreamQuality,
     pub disconnected: bool,
     pub retry_connect_attempts: u8,
 }
@@ -24,7 +26,8 @@ impl<C: SyncChannel, S: Storage> Subscriber<C, S> {
             audio_subscriptions: HashMap::new(),
             video_subscriptions: HashMap::new(),
             disconnected: false,
-            retry_connect_attempts: 0
+            retry_connect_attempts: 0,
+            current_quality: StreamQuality::High,
         })
     }
 }
@@ -42,8 +45,13 @@ pub enum SubscriberMessage {
         candidate: IceCandidate,
     },
     Websocket (MessageType),
-    ConnectAudio(ConnectionRequest<AudioPacketForwarder>),
-    ConnectVideo { request: ConnectionRequest<VideoPacketForwarder>, quality: StreamQuality, keyframe_interceptor: Addr<KeyframeInterceptor> },
+    ConnectAudio(ConnectionRequest<AudioPacketForwarder, AudioRouterContext>),
+    ConnectVideo { 
+        request: ConnectionRequest<VideoPacketForwarder, VideoRouterContext>, 
+        quality: StreamQuality, 
+        keyframe_interceptor: Addr<KeyframeInterceptor>, 
+        wake_notification: Arc<Notify>
+    },
     Unsubscribe { peer_id: Uuid }
 }
 
@@ -76,8 +84,9 @@ impl<C: SyncChannel, S: Storage> Actor for Subscriber<C, S> {
                 }
             }
             SubscriberMessage::SwitchQualityLayer { quality } => {
+                self.current_quality = quality;
                 for subscription in self.video_subscriptions.values() {
-                    let _ = subscription.send(VideoSubscriptionMessage::SwitchQualityLayer { to: quality }).await;
+                    let _ = subscription.send(VideoLayerManagerMessage::SwitchQualityLayer { to: quality }).await;
                 }
             }
             SubscriberMessage::Signal { offer: sdp } => {
@@ -106,8 +115,8 @@ impl<C: SyncChannel, S: Storage> Actor for Subscriber<C, S> {
                     self.stop(ctx).await;
                 }
             },
-            SubscriberMessage::ConnectVideo {quality, request, keyframe_interceptor} => {
-                if let Err(e) = self.connect_video(quality, request, keyframe_interceptor).await {
+            SubscriberMessage::ConnectVideo {quality, request, keyframe_interceptor, wake_notification} => {
+                if let Err(e) = self.connect_video(quality, request, keyframe_interceptor, wake_notification).await {
                     tracing::error!("👤 [UserActor] UserMessage::ConnectToUser {:?}", e);
                     self.stop(ctx).await;
                 }
@@ -208,26 +217,32 @@ impl<C: SyncChannel, S: Storage> Subscriber<C, S> {
         }
         Ok(())
     }
-    async fn connect_audio(&mut self, request: ConnectionRequest<AudioPacketForwarder>) -> Result<(), Error> {
+    async fn connect_audio(&mut self, request: ConnectionRequest<AudioPacketForwarder, AudioRouterContext>) -> Result<(), Error> {
         let peer_id = request.peer_id;
         let audio_subscription = AudioPacketForwarder::init(self.pc.clone(), request).await?;
         let audio_subscription = audio_subscription.start();
         self.audio_subscriptions.insert(peer_id, audio_subscription);
         Ok(())
     }
-    async fn connect_video(&mut self, quality: StreamQuality, request: ConnectionRequest<VideoPacketForwarder>, keyframe_interceptor: Addr<KeyframeInterceptor>) -> Result<(), Error> {
+    async fn connect_video(&mut self, 
+        quality: StreamQuality, 
+        request: ConnectionRequest<VideoPacketForwarder, VideoRouterContext>, 
+        keyframe_interceptor: Addr<KeyframeInterceptor>,
+        wake_notification: Arc<Notify>
+    ) -> Result<(), Error> {
         let peer_id = request.peer_id;
-        let layer = QualityLayer { gateway_router: request.gateway_router, keyframe_interceptor };
+        let layer = QualityLayer { gateway_router: request.gateway_router, keyframe_interceptor, wake_notification };
         match self.video_subscriptions.entry(peer_id) {
             std::collections::hash_map::Entry::Occupied(o) => {
                 let addr = o.get();
-                let _ = addr.send(VideoSubscriptionMessage::AddSubsription { quality, layer  }).await;
+                let _ = addr.send(VideoLayerManagerMessage::AddLayer { quality, layer  }).await;
             },
             std::collections::hash_map::Entry::Vacant(v) => {
-                let video_subscription = VideoSubscription::new(
+                let video_subscription = VideoLayerManager::new(
                     self.pc.clone(), 
                     peer_id, 
                     request.codec_mime_type, 
+                    self.current_quality,
                     quality,
                     layer, 
                 ).await?;

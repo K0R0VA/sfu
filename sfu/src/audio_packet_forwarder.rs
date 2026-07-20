@@ -2,16 +2,16 @@ use std::sync::Arc;
 
 use webrtc::{peer_connection::RTCPeerConnection, rtp::packet::Packet, rtp_transceiver::{RTCRtpTransceiverInit, rtp_codec::RTCRtpCodecCapability, rtp_sender::RTCRtpSender, rtp_transceiver_direction::RTCRtpTransceiverDirection}, track::track_local::{TrackLocalWriter, track_local_static_rtp::TrackLocalStaticRTP}};
 
-use crate::{actor::{Actor, Addr, StoppingExt}, error::Error, room::StreamQuality, rtp_packet_gateway_router::{RtpPacketGatewayRouter, RtpPacketGatewayRouterMessage}, user::ConnectionRequest};
+use crate::{actor::{Actor, Addr, StoppingExt}, error::Error, rtp_packet_gateway_router::{AudioRouterContext, RtpPacketGatewayRouter, RtpPacketGatewayRouterMessage, RtpPacketMessage}, user::ConnectionRequest};
 
 pub struct AudioPacketForwarder {
     pub track: Arc<TrackLocalStaticRTP>,
     pub sender: Arc<RTCRtpSender>,
-    pub router: Addr<RtpPacketGatewayRouter<Self>>
+    pub router: Addr<RtpPacketGatewayRouter<Self, AudioRouterContext>>
 }
 
 impl AudioPacketForwarder {
-    pub async fn init(pc: Arc<RTCPeerConnection>, request: ConnectionRequest<AudioPacketForwarder>) -> Result<Self, Error> {
+    pub async fn init(pc: Arc<RTCPeerConnection>, request: ConnectionRequest<AudioPacketForwarder, AudioRouterContext>) -> Result<Self, Error> {
         let ConnectionRequest {
             codec_mime_type,
             peer_id,
@@ -46,11 +46,15 @@ impl AudioPacketForwarder {
 }
 
 pub struct AudioPacketForwarderMessage {
-    packet: Packet
+    packet: Option<Packet>
 }
 
-impl From<(StreamQuality, Packet)> for AudioPacketForwarderMessage {
-    fn from((_, packet): (StreamQuality, Packet)) -> Self {
+impl From<RtpPacketMessage> for AudioPacketForwarderMessage {
+    fn from(message: RtpPacketMessage) -> Self {
+        let packet = match message {
+            RtpPacketMessage::Packet(_, packet) => Some(packet),
+            _ => None
+        };
         Self {packet}
     }
 }
@@ -58,15 +62,17 @@ impl From<(StreamQuality, Packet)> for AudioPacketForwarderMessage {
 impl Actor for AudioPacketForwarder {
     type Message = AudioPacketForwarderMessage;
     async fn starting(&mut self, ctx: &crate::actor::Ctx<'_, Self>) {
-        self.router
+        let _ = self.router
             .send(RtpPacketGatewayRouterMessage::Subscribe(ctx.addr.clone()))
             .await;
     }
     async fn handle(&mut self, ctx: &mut crate::actor::Ctx<'_, Self>, packet: Self::Message) {
-        self.forward(packet.packet).await.ok_or_terminate(ctx);
+        if let Some(packet) = packet.packet {
+            self.forward(packet).await.ok_or_terminate(ctx);
+        }
     }
     async fn stopping(self, ctx: &crate::actor::Ctx<'_, Self>) {
-        self.router
+        let _ = self.router
             .send(RtpPacketGatewayRouterMessage::Unsubscribe(ctx.addr.clone()))
             .await;
     }

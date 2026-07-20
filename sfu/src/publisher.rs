@@ -1,13 +1,12 @@
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use std::{str::FromStr, sync::Arc};
+use tokio::sync::Notify;
 use uuid::Uuid;
-use webrtc::{ice_transport::{ice_candidate::RTCIceCandidateInit, ice_connection_state::RTCIceConnectionState}, peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription}, rtp::packet::Packet, rtp_transceiver::rtp_codec::RTPCodecType};
-use crate::{Storage, SyncChannel, actor::{Actor, Addr, Ctx, StoppingExt, WeakAddr}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, keyframe_interceptor::KeyframeInterceptor, quality_monitor::{DeviceType, QualityMonitor, QualityThresholds}, room::{MimeType, Room, RoomMessage, StreamQuality}, rtp_packet_gateway_router::RtpPacketGatewayRouter, user::{IceCandidate, MessageType, SignalMessage, Target, User, UserMessage, initiate_ice_restart}, video_packet_forwarder::VideoPacketForwarder};
+use webrtc::{ice_transport::{ice_candidate::RTCIceCandidateInit, ice_connection_state::RTCIceConnectionState}, peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription}, rtp_transceiver::rtp_codec::RTPCodecType};
+use crate::{Storage, SyncChannel, actor::{Actor, Addr, Ctx, StoppingExt, WeakAddr}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, keyframe_interceptor::KeyframeInterceptor, quality_monitor::{DeviceType, QualityMonitor, QualityThresholds}, room::{AudioRouterStream, Codek, Room, RoomMessage, StreamQuality, VideoRouterStream}, rtp_packet_gateway_router::{AudioRouter, AudioRouterContext, RouterContext, RtpPacketGatewayRouter, RtpPacketMessage, VideoRouter, VideoRouterContext}, user::{IceCandidate, MessageType, SignalMessage, Target, User, UserMessage, initiate_ice_restart}, video_packet_forwarder::VideoPacketForwarder};
 
 pub struct Publisher<C: SyncChannel, S: Storage> {
     pub peer_id: Uuid,
     pub pc: Arc<RTCPeerConnection>,
-    pub video_tracks: HashMap<StreamQuality, Track<VideoPacketForwarder>>,
-    pub audio_track: Option<Track<AudioPacketForwarder>>,
     pub user: Addr<User<C, S>>,
     pub room: Addr<Room<C, S>>,    
     pub qualify_monitor: WeakAddr<QualityMonitor<C, S>>,
@@ -16,19 +15,6 @@ pub struct Publisher<C: SyncChannel, S: Storage> {
     pub retry_connect_attempts: u8,
 }
 
-pub struct Track<T: Actor> where T::Message: From<(StreamQuality, Packet)> {
-    mime_type: MimeType,
-    addr: Addr<RtpPacketGatewayRouter<T>>
-}
-
-impl<T: Actor> Clone for Track<T> where T::Message: From<(StreamQuality, Packet)> {
-    fn clone(&self) -> Self {
-        Self {
-            addr: self.addr.clone(),
-            mime_type: self.mime_type.clone()
-        }
-    }
-}
 
 const TARGET: Target = Target::Publisher;
 
@@ -41,8 +27,6 @@ impl<C: SyncChannel, S: Storage> Publisher<C, S> {
             user,
             room,
             peer_id,
-            video_tracks: HashMap::with_capacity(3),
-            audio_track: None,
             qualify_monitor: WeakAddr::default(),
             disconnected: false,
             retry_connect_attempts: 0,
@@ -66,8 +50,8 @@ pub enum PublisherMessage {
         candidate: IceCandidate,
     },
     InitiateMonitoring { device_type: DeviceType },
-    NewAudioTrack(Track<AudioPacketForwarder>),
-    NewVideoTrack{ quality: StreamQuality, track: Track<VideoPacketForwarder>, keyframe_interceptor: Addr<KeyframeInterceptor> },
+    NewAudioTrack(AudioRouterStream),
+    NewVideoTrack{ quality: StreamQuality, video_router_stream: VideoRouterStream },
 }
 
 impl<C: SyncChannel, S: Storage> Actor for Publisher<C, S> {
@@ -93,41 +77,22 @@ impl<C: SyncChannel, S: Storage> Actor for Publisher<C, S> {
                     }
                 }
             }
-            PublisherMessage::NewAudioTrack(track) if self.audio_track.is_none() => {
-                self.audio_track = Some(track.clone());
+            PublisherMessage::NewAudioTrack(router) => {
                 self.room.send(RoomMessage::AddAudioTrack { 
                         peer_id: self.peer_id, 
-                        track: crate::room::PeerTrack { 
-                         gateway_router:   track.addr,
-                         mime_type: track.mime_type 
-                    }, 
+                        router, 
                 })
                 .await
                 .ok_or_terminate(ctx);
             }
-            PublisherMessage::NewAudioTrack(_track) =>  {
-                todo!("implement NewAudioTrack resubscribe")
-            }
-            PublisherMessage::NewVideoTrack {quality, track, keyframe_interceptor} => {
-                match self.video_tracks.entry(quality) {
-                    std::collections::hash_map::Entry::Occupied( _o) => {
-                        todo!("implement NewAudioTrack resubscribe");
-                    },
-                    std::collections::hash_map::Entry::Vacant(v) => {
-                        v.insert(track.clone());
-                        self.room.send(RoomMessage::AddVideoTrack { 
-                            peer_id: self.peer_id, 
-                            quality,
-                            keyframe_interceptor,
-                            track: crate::room::PeerTrack { 
-                                gateway_router: track.addr,
-                                mime_type: track.mime_type 
-                            }, 
-                        })
-                        .await
-                        .ok_or_terminate(ctx);
-                    }
-                }
+            PublisherMessage::NewVideoTrack {quality, video_router_stream } => {
+                self.room.send(RoomMessage::AddVideoTrack { 
+                    peer_id: self.peer_id, 
+                    quality,
+                    video_router_stream
+                })
+                .await
+                .ok_or_terminate(ctx);
             },
             PublisherMessage::Websocket(message) => {
                 self.handle_ws_message(message).await.ok_or_terminate(ctx);
@@ -177,15 +142,15 @@ impl<C: SyncChannel, S: Storage> Actor for Publisher<C, S> {
             let addr = addr.clone();
             let ssrc = track.ssrc();
             let mime_type = track.codec().capability.mime_type;
-            let mime_type = MimeType::from_str(&mime_type).unwrap_or_default();
+            let mime_type = Codek::from_str(&mime_type).unwrap_or_default();
             let kind = track.kind();
             let rid = StreamQuality::from_str(track.rid());
             Box::pin(async move {
                 match kind {
                     RTPCodecType::Audio | RTPCodecType::Unspecified => { 
-                        let rtp_packet_forwarder= RtpPacketGatewayRouter::<AudioPacketForwarder>::spawn(track, StreamQuality::Audio,  ssrc, pc.clone());
+                        let rtp_packet_forwarder= RtpPacketGatewayRouter::<AudioPacketForwarder, AudioRouterContext>::spawn(track, AudioRouterContext {});
                         addr.send(
-                            PublisherMessage::NewAudioTrack(Track { mime_type, addr: rtp_packet_forwarder })
+                            PublisherMessage::NewAudioTrack(AudioRouterStream { router: rtp_packet_forwarder, codek: mime_type })
                         )
                         .await
                         .ok();
@@ -193,12 +158,18 @@ impl<C: SyncChannel, S: Storage> Actor for Publisher<C, S> {
                     RTPCodecType::Video => {
                         let keyframe_interceptor = KeyframeInterceptor::new(pc.clone(), ssrc).start();
                         let quality = rid.unwrap_or(StreamQuality::High);
-                        let rtp_packet_forwarder= RtpPacketGatewayRouter::<VideoPacketForwarder>::spawn(track, quality, ssrc, pc.clone());
+                        let wake_notifier = Arc::new(Notify::new());
+                        let context = VideoRouterContext::new(pc, quality, ssrc, wake_notifier.clone());   
+                        let rtp_packet_forwarder= RtpPacketGatewayRouter::<VideoPacketForwarder, VideoRouterContext>::spawn(track, context);
                         addr.send(
                             PublisherMessage::NewVideoTrack {
-                                track: Track { mime_type, addr: rtp_packet_forwarder } , 
                                 quality,
-                                keyframe_interceptor 
+                                video_router_stream: VideoRouterStream { router: 
+                                    rtp_packet_forwarder, 
+                                    codek: mime_type, 
+                                    keyframe_interceptor, 
+                                    wake_notifier 
+                                }
                             }
                         )
                         .await
