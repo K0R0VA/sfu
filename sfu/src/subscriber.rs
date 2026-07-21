@@ -1,8 +1,8 @@
-use std::{collections::HashMap, sync::{Arc}};
+use std::{collections::HashMap, sync::Arc};
 use tokio::sync::Notify;
 use uuid::Uuid;
 use webrtc::{ice_transport::{ice_candidate::RTCIceCandidateInit, ice_connection_state::RTCIceConnectionState}, peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription, signaling_state::RTCSignalingState}};
-use crate::{Storage, SyncChannel, actor::{Actor, Addr, Ctx}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, keyframe_interceptor::KeyframeInterceptor, room::StreamQuality, rtp_packet_gateway_router::{AudioRouterContext, VideoRouterContext}, user::{ConnectionRequest, IceCandidate, MessageType, SignalMessage, Target, User, UserMessage, initiate_ice_restart}, video_layer_manager::{QualityLayer, VideoLayerManager, VideoLayerManagerMessage}, video_packet_forwarder::VideoPacketForwarder};
+use crate::{IceRestartExt, Storage, SyncChannel, actor::{Actor, Addr, Ctx, StoppingExt}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, keyframe_interceptor::KeyframeInterceptor, room::StreamQuality, rtp_packet_gateway_router::{AudioRouterContext, VideoRouterContext}, user::{ConnectionRequest, IceCandidate, MessageType, SignalMessage, Target, User, UserMessage, initiate_ice_restart}, video_layer_manager::{QualityLayer, VideoLayerManager, VideoLayerManagerMessage}, video_packet_forwarder::VideoPacketForwarder};
 
 pub struct Subscriber<C: SyncChannel, S: Storage> {
     pub user: Addr<User<C, S>>,
@@ -55,33 +55,20 @@ pub enum SubscriberMessage {
     Unsubscribe { peer_id: Uuid }
 }
 
+impl From<RTCIceConnectionState> for SubscriberMessage {
+    fn from(value: RTCIceConnectionState) -> Self {
+        Self::IceStateChange { state: value }
+    }
+}
+
 impl<C: SyncChannel, S: Storage> Actor for Subscriber<C, S> {
     type Message = SubscriberMessage;
     async fn handle(&mut self, ctx: &mut Ctx<'_, Self>, msg: Self::Message) {
         match msg {
-            SubscriberMessage::CheckIceState => {
-                let current_state = self.pc.ice_connection_state();
-                let is_disconnected = [
-                        RTCIceConnectionState::Failed, 
-                        RTCIceConnectionState::Disconnected
-                    ]
-                    .iter()
-                    .any(|failed_state| *failed_state == current_state);
-                if is_disconnected {
-                    if self.retry_connect_attempts < 3 {
-                        let addr = ctx.addr.clone();
-                        tokio::spawn(async move {
-                            let _ = addr.send(SubscriberMessage::CheckIceState).await;
-                        });
-                    } else {
-                        self.stop(ctx).await;
-                    }
-                }
-            }
+            SubscriberMessage::CheckIceState => { self.check_ice_state(ctx).await.ok_or_terminate(ctx); },
             SubscriberMessage::IceStateChange { state } => {
-                if let Err(e) = self.handle_ice_state_change(state).await {
-                    tracing::error!("[UserActor] UserMessage::Signal {e}");
-                }
+                let addr = ctx.addr.clone();
+                self.handle_ice_state_change(&addr, state).await.ok_or_terminate(ctx);
             }
             SubscriberMessage::SwitchQualityLayer { quality } => {
                 self.current_quality = quality;
@@ -142,6 +129,8 @@ impl<C: SyncChannel, S: Storage> Actor for Subscriber<C, S> {
             })
         }));
         let addr = ctx.addr.clone();
+        self.on_ice_connection_state_change(addr);
+        let addr = ctx.addr.clone();
         let pc = Arc::clone(&self.pc);
         self.pc.on_negotiation_needed(Box::new(move || {
             let pc = Arc::clone(&pc);
@@ -177,24 +166,6 @@ impl<C: SyncChannel, S: Storage> Actor for Subscriber<C, S> {
 }
 
 impl<C: SyncChannel, S: Storage> Subscriber<C, S> {
-    async fn handle_ice_state_change(&mut self, state: RTCIceConnectionState) -> Result<(), Error> {
-        match state {
-            RTCIceConnectionState::Disconnected | RTCIceConnectionState::Failed => {
-                tracing::warn!("[Subscriber] IceStateChange");
-                self.disconnected = true;
-                let message = initiate_ice_restart(&self.pc, Target::Subscriber).await?;
-                let _ = self.user.send(UserMessage::SignalMessage(message)).await;
-                self.retry_connect_attempts += 1;
-            },
-            RTCIceConnectionState::Connected if self.disconnected => {
-                self.disconnected = false;
-                self.retry_connect_attempts = 0;
-            },
-            _ => {}
-        }
-        Ok(())
-    }
-    
     async fn handle_ws_message(&mut self, message: MessageType) -> Result<(), Error> {
         match message {
             MessageType::Answer { sdp } => {
@@ -259,6 +230,30 @@ impl<C: SyncChannel, S: Storage> Subscriber<C, S> {
         if let Some(video_subscription) = self.video_subscriptions.remove(&speaker_id) {
             video_subscription.terminate().await?;
         };
+        Ok(())
+    }
+}
+
+impl<C: SyncChannel, S: Storage> IceRestartExt for Subscriber<C, S> {
+    const CHECK_ICE_STATE: Self::Message = SubscriberMessage::CheckIceState;
+    const TARGET: Target = Target::Subscriber;
+    async fn on_recconnect(&self) -> Result<(), Error> {
+        for video_subscription in self.video_subscriptions.values() {
+            video_subscription.send(VideoLayerManagerMessage::ResumeStreaming).await?;
+        }
+        Ok(())
+    }
+    fn disconnected(&mut self) -> &mut bool {
+        &mut self.disconnected
+    }
+    fn peer_connection(&self) -> &RTCPeerConnection {
+        &self.pc
+    }
+    fn retry_connect_attempts(&mut self) -> &mut u8 {
+        &mut self.retry_connect_attempts
+    }
+    async fn send_target_message(&self, message: SignalMessage) -> Result<(), Error> {
+        self.user.send(UserMessage::SignalMessage(message)).await?;
         Ok(())
     }
 }

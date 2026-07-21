@@ -2,13 +2,14 @@ use std::{str::FromStr, sync::Arc};
 use tokio::sync::Notify;
 use uuid::Uuid;
 use webrtc::{ice_transport::{ice_candidate::RTCIceCandidateInit, ice_connection_state::RTCIceConnectionState}, peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription}, rtp_transceiver::rtp_codec::RTPCodecType};
-use crate::{Storage, SyncChannel, actor::{Actor, Addr, Ctx, StoppingExt, WeakAddr}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, keyframe_interceptor::KeyframeInterceptor, quality_monitor::{DeviceType, QualityMonitor, QualityThresholds}, room::{AudioRouterStream, Codek, Room, RoomMessage, StreamQuality, VideoRouterStream}, rtp_packet_gateway_router::{AudioRouter, AudioRouterContext, RouterContext, RtpPacketGatewayRouter, RtpPacketMessage, VideoRouter, VideoRouterContext}, user::{IceCandidate, MessageType, SignalMessage, Target, User, UserMessage, initiate_ice_restart}, video_packet_forwarder::VideoPacketForwarder};
+use crate::{IceRestartExt, Storage, SyncChannel, actor::{Actor, Addr, Ctx, StoppingExt, WeakAddr}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, keyframe_interceptor::{KeyframeInterceptor, RequestKeyframe}, quality_monitor::{DeviceType, QualityMonitor, QualityThresholds}, room::{AudioRouterStream, Codek, Room, RoomMessage, StreamQuality, VideoRouterStream}, rtp_packet_gateway_router::{AudioRouter, AudioRouterContext, RouterContext, RtpPacketGatewayRouter, RtpPacketMessage, VideoRouter, VideoRouterContext}, user::{IceCandidate, MessageType, SignalMessage, Target, User, UserMessage, initiate_ice_restart}, video_packet_forwarder::VideoPacketForwarder};
 
 pub struct Publisher<C: SyncChannel, S: Storage> {
     pub peer_id: Uuid,
     pub pc: Arc<RTCPeerConnection>,
     pub user: Addr<User<C, S>>,
     pub room: Addr<Room<C, S>>,    
+    pub video_track_keyframe_interceptors: Vec<Addr<KeyframeInterceptor>>,
     pub qualify_monitor: WeakAddr<QualityMonitor<C, S>>,
     pub ice_candidate_send: bool,
     pub disconnected: bool,
@@ -31,6 +32,7 @@ impl<C: SyncChannel, S: Storage> Publisher<C, S> {
             disconnected: false,
             retry_connect_attempts: 0,
             ice_candidate_send: false,
+            video_track_keyframe_interceptors: Vec::with_capacity(3)
         })
     }
     pub async fn try_stop(self) -> Result<(), Error> {
@@ -54,28 +56,22 @@ pub enum PublisherMessage {
     NewVideoTrack{ quality: StreamQuality, video_router_stream: VideoRouterStream },
 }
 
+impl From<RTCIceConnectionState> for PublisherMessage {
+    fn from(value: RTCIceConnectionState) -> Self {
+        Self::IceStateChange { state: value }
+    }
+}
+
 impl<C: SyncChannel, S: Storage> Actor for Publisher<C, S> {
     type Message = PublisherMessage;
     async fn handle(&mut self, ctx: &mut Ctx<'_, Self>, msg: Self::Message) {
         match msg {
             PublisherMessage::CheckIceState => {
-                let current_state = self.pc.ice_connection_state();
-                let is_disconnected = [
-                        RTCIceConnectionState::Failed, 
-                        RTCIceConnectionState::Disconnected
-                    ]
-                    .iter()
-                    .any(|failed_state| *failed_state == current_state);
-                if is_disconnected {
-                    if self.retry_connect_attempts < 3 {
-                        let addr = ctx.addr.clone();
-                        tokio::spawn(async move {
-                           addr.send(PublisherMessage::CheckIceState).await.ok();
-                        });
-                    } else {
-                        self.stop(ctx).await;
-                    }
-                }
+                self.check_ice_state(ctx).await.ok_or_terminate(ctx);
+            }
+            PublisherMessage::IceStateChange { state } => {
+                let addr = ctx.addr.clone();
+                self.handle_ice_state_change(&addr, state).await.ok_or_terminate(ctx);
             }
             PublisherMessage::NewAudioTrack(router) => {
                 self.room.send(RoomMessage::AddAudioTrack { 
@@ -86,6 +82,7 @@ impl<C: SyncChannel, S: Storage> Actor for Publisher<C, S> {
                 .ok_or_terminate(ctx);
             }
             PublisherMessage::NewVideoTrack {quality, video_router_stream } => {
+                self.video_track_keyframe_interceptors.push(video_router_stream.keyframe_interceptor.clone());
                 self.room.send(RoomMessage::AddVideoTrack { 
                     peer_id: self.peer_id, 
                     quality,
@@ -96,9 +93,6 @@ impl<C: SyncChannel, S: Storage> Actor for Publisher<C, S> {
             },
             PublisherMessage::Websocket(message) => {
                 self.handle_ws_message(message).await.ok_or_terminate(ctx);
-            }
-            PublisherMessage::IceStateChange { state } => {
-                self.handle_ice_state_change(state).await.ok_or_terminate(ctx);
             }
             PublisherMessage::IceCandidate { candidate } => if !self.ice_candidate_send {
                let message = SignalMessage::Rtc {
@@ -126,15 +120,7 @@ impl<C: SyncChannel, S: Storage> Actor for Publisher<C, S> {
             })
         }));
         let addr = ctx.addr.clone();
-        self.pc.on_ice_connection_state_change(Box::new({
-            let addr = addr.clone();
-            move |state| {
-                let addr = addr.clone();
-                Box::pin(async move {
-                    let _ = addr.send(PublisherMessage::IceStateChange { state }).await;
-                })
-            }
-        }));
+        self.on_ice_connection_state_change(addr);
         let addr = ctx.addr.clone();
         let pc = self.pc.clone();
         self.pc.on_track(Box::new(move |track, _, _| {
@@ -199,27 +185,6 @@ impl<C: SyncChannel, S: Storage> Publisher<C, S> {
         self.qualify_monitor.set_addr(quality_monitor);
         Ok(())
     }
-    async fn handle_ice_state_change(&mut self, state: RTCIceConnectionState) -> Result<(), Error> {
-        match state {
-            RTCIceConnectionState::Disconnected | RTCIceConnectionState::Failed => {
-                tracing::warn!("[Publisher] IceStateChange");
-                self.disconnected = true;
-                let message = initiate_ice_restart(&self.pc, Target::Publisher).await?;
-                let _ = self.user.send(UserMessage::SignalMessage(message)).await;
-                self.retry_connect_attempts += 1;
-            },
-            RTCIceConnectionState::Connected if self.disconnected => {
-                self.disconnected = false;
-                self.retry_connect_attempts = 0;
-                // for VideoTrack { pli_sender, .. } in self.video_tracks.values() {
-                //     let _ = pli_sender.send(Ping).await;
-                // }
-            },
-            _ => {}
-        }
-        Ok(())
-    }
-    
     async fn handle_ws_message(&mut self, message: MessageType) -> Result<(), Error> {
         match message {
             MessageType::Offer {sdp} => {
@@ -250,6 +215,27 @@ impl<C: SyncChannel, S: Storage> Publisher<C, S> {
             },
             _ => {}
         }
+        Ok(())
+    }
+}
+
+impl<C: SyncChannel, S: Storage> IceRestartExt for Publisher<C, S> {
+    const CHECK_ICE_STATE: Self::Message = PublisherMessage::CheckIceState;
+    const TARGET: Target = Target::Publisher;
+    async fn on_recconnect(&self) -> Result<(), Error> {
+        Ok(())
+    }
+    fn disconnected(&mut self) -> &mut bool {
+        &mut self.disconnected
+    }
+    fn peer_connection(&self) -> &RTCPeerConnection {
+        &self.pc
+    }
+    fn retry_connect_attempts(&mut self) -> &mut u8 {
+        &mut self.retry_connect_attempts
+    }
+    async fn send_target_message(&self, message: SignalMessage) -> Result<(), Error> {
+        self.user.send(UserMessage::SignalMessage(message)).await?;
         Ok(())
     }
 }

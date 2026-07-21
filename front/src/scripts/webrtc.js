@@ -77,13 +77,17 @@ export class WebrtcConnection {
             console.error("Ошибка при обработке SFU Offer:", error);
         }
     }
-    async restart_ice(target) {
-        await this[`${target}_pc`].setRemoteDescription(new RTCSessionDescription({
-            kind: "rtc",
-            type: 'offer',
-            sdp: msg.sdp
-        }));
-        
+    async restart_ice({target, sdp}) {
+        try {
+            await this[`${target}_pc`].setRemoteDescription(new RTCSessionDescription({
+                kind: "rtc",
+                type: 'offer',
+                sdp
+            }));
+        } catch (e) {
+            console.error('ICE_RESTART failed');
+            return;
+        }
         const answer = await this[`${target}_pc`].createAnswer();
         await this[`${target}_pc`].setLocalDescription(answer);
         this.ws.send(JSON.stringify({

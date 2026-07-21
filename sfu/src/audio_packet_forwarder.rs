@@ -66,9 +66,9 @@ impl Actor for AudioPacketForwarder {
             .send(RtpPacketGatewayRouterMessage::Subscribe(ctx.addr.clone()))
             .await;
     }
-    async fn handle(&mut self, ctx: &mut crate::actor::Ctx<'_, Self>, packet: Self::Message) {
+    async fn handle(&mut self, _ctx: &mut crate::actor::Ctx<'_, Self>, packet: Self::Message) {
         if let Some(packet) = packet.packet {
-            self.forward(packet).await.ok_or_terminate(ctx);
+            let _ = self.forward(packet).await;
         }
     }
     async fn stopping(self, ctx: &crate::actor::Ctx<'_, Self>) {

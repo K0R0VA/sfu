@@ -37,12 +37,8 @@ pub struct RequestKeyframe;
 
 impl Actor for KeyframeInterceptor {
     type Message = RequestKeyframe;
-    async fn starting(&mut self, _ctx: &crate::actor::Ctx<'_, Self>) {
-        tracing::info!("[PliSender] starting");
-    }
-    async fn stopping(self, _ctx: &crate::actor::Ctx<'_, Self>) {
-        tracing::info!("[PliSender] stopping");
-    }
+    async fn starting(&mut self, _ctx: &crate::actor::Ctx<'_, Self>) {}
+    async fn stopping(self, _ctx: &crate::actor::Ctx<'_, Self>) {}
     async fn handle(&mut self, ctx: &mut crate::actor::Ctx<'_, Self>, _: Self::Message) {
         self.send_pli().await.ok_or_terminate(ctx);
     }

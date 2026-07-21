@@ -144,13 +144,11 @@ impl<C: SyncChannel, S: Storage> Actor for Room<C, S> {
                 peer.add_audio_stream(router);
             },
             RoomMessage::AddVideoTrack { peer_id, quality, video_router_stream} => {
-                tracing::info!("[RoomActor] AddVideoTrack");
                 self.connect_new_video_stream(peer_id, quality, video_router_stream.clone()).await;
                 let peer = self.peers.get_mut(&peer_id).unwrap();
                 peer.add_stream_stream(quality, video_router_stream);
             }
             RoomMessage::Leave { peer_id } => {
-                tracing::info!("❌ [RoomActor] Участник {} вышел из комнаты", peer_id);
                 self.peers.remove(&peer_id);
                 for (_, Peer { user, .. }) in self.peers.iter() {
                     let _ = user.send(UserMessage::Unsubscribe { user_id: peer_id }).await;

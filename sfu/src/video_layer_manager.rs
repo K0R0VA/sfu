@@ -1,7 +1,7 @@
 use std::{collections::{HashMap}, sync::Arc, time::Duration};
 use tokio::sync::Notify;
 use uuid::Uuid;
-use webrtc::{peer_connection::RTCPeerConnection, rtcp::{payload_feedbacks::picture_loss_indication::PictureLossIndication, transport_feedbacks::transport_layer_nack::TransportLayerNack}, rtp_transceiver::{RTCRtpTransceiverInit, rtp_codec::RTCRtpCodecCapability, rtp_sender::RTCRtpSender, rtp_transceiver_direction::RTCRtpTransceiverDirection}, track::track_local::track_local_static_rtp::TrackLocalStaticRTP};
+use webrtc::{ice_transport::ice_connection_state::RTCIceConnectionState, peer_connection::RTCPeerConnection, rtcp::{payload_feedbacks::picture_loss_indication::PictureLossIndication, transport_feedbacks::transport_layer_nack::TransportLayerNack}, rtp_transceiver::{RTCRtpTransceiverInit, rtp_codec::RTCRtpCodecCapability, rtp_sender::RTCRtpSender, rtp_transceiver_direction::RTCRtpTransceiverDirection}, track::track_local::track_local_static_rtp::TrackLocalStaticRTP};
 
 use crate::{actor::{Actor, Addr, StoppingExt, WeakAddr}, error::Error, keyframe_interceptor::{KeyframeInterceptor, RequestKeyframe}, room::{Codek, StreamQuality}, rtp_packet_gateway_router::{RtpPacketGatewayRouter, VideoRouterContext}, video_packet_forwarder::{VideoPacketForwarder, VideoPacketForwarderMessage}};
 
@@ -49,7 +49,7 @@ impl VideoLayerManager {
             .sender()
             .await;
         quality_layers.insert(quality, quality_layer);
-        let this = Self { pc, peer_id, track, quality_layers, active_track, active_quality: None, connection_quality: current_connection_quality, packet_forwarder: WeakAddr::default() };
+        let this = Self { pc, peer_id, track, quality_layers, active_track, active_quality: None, connection_quality: current_connection_quality, packet_forwarder: WeakAddr::default(),};
         Ok(this) 
     }
     fn spawn_notify_task(&self, addr: Addr<Self>, quality: StreamQuality, wake_notification: Arc<Notify> ) {
@@ -71,6 +71,7 @@ pub enum VideoLayerManagerMessage {
     SwitchQualityLayer { to: StreamQuality },
     FallbackToLowQuality,
     LayerAwake { quality: StreamQuality },
+    ResumeStreaming,
     Drop,
     ForcePli
 }
@@ -85,6 +86,7 @@ impl Actor for VideoLayerManager {
                 self.spawn_notify_task(ctx.addr.clone(), quality, layer.wake_notification);
                 if quality == self.connection_quality {
                     let message = VideoPacketForwarderMessage::LayerSwitched {
+                        quality,
                         gateway_router: layer.gateway_router.clone()
                     };
                     self.active_quality = Some(quality);
@@ -93,6 +95,9 @@ impl Actor for VideoLayerManager {
                         .await
                         .ok_or_terminate(ctx);
                 }
+            }
+            VideoLayerManagerMessage::ResumeStreaming =>  {
+                self.packet_forwarder.try_send(VideoPacketForwarderMessage::Reset).await.ok_or_terminate(ctx);
             }
             VideoLayerManagerMessage::ForcePli => {
                 let Some(active_quality) = self.active_quality else { return ; };
@@ -109,6 +114,7 @@ impl Actor for VideoLayerManager {
                 self.connection_quality = to;
                 self.packet_forwarder
                     .try_send(VideoPacketForwarderMessage::LayerSwitched {
+                        quality: to,
                         gateway_router: layer.gateway_router.clone()
                     })
                     .await
@@ -119,6 +125,7 @@ impl Actor for VideoLayerManager {
                 self.active_quality = Some(StreamQuality::Low);
                 self.packet_forwarder
                     .try_send(VideoPacketForwarderMessage::LayerSwitched {
+                        quality: StreamQuality::Low,
                         gateway_router: layer.gateway_router.clone()
                     })
                     .await
@@ -131,6 +138,7 @@ impl Actor for VideoLayerManager {
                 self.active_quality = Some(quality);
                 self.packet_forwarder
                     .try_send(VideoPacketForwarderMessage::LayerSwitched {
+                        quality,
                         gateway_router: layer.gateway_router.clone()
                     })
                     .await
@@ -188,7 +196,6 @@ impl Actor for VideoLayerManager {
                         .await;
         } 
     }
-
     async fn stopping(mut self, _: &crate::actor::Ctx<'_, Self>) {
         self.packet_forwarder.try_terminate().await.ok();
         self.quality_layers.clear();

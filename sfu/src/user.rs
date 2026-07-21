@@ -93,7 +93,6 @@ impl<C: SyncChannel, S: Storage> Actor for User<C, S> {
             tracing::error!("[User] send_welcome {e}");
             return;
         }
-        tracing::info!("🟢 [Userctor] Пользователь инициализирован.");
     }
     async fn stopping(self, _: &Ctx<'_, Self>) {
         self.subscriber.try_terminate().await.ok();

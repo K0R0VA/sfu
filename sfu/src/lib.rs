@@ -12,20 +12,23 @@ pub mod subscriber;
 pub mod publisher;
 pub mod server;
 use std::fmt::Debug;
+use std::time::Duration;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 use webrtc::api::APIBuilder;
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::setting_engine::SettingEngine;
+use webrtc::ice_transport::ice_connection_state::RTCIceConnectionState;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::rtp::packet::Packet;
 use webrtc::rtp_transceiver::rtp_codec::{RTCRtpHeaderExtensionCapability, RTPCodecType};
+use crate::actor::{Actor, Addr};
 use crate::error::Error;
-use crate::user::SignalMessage;
+use crate::user::{SignalMessage, Target, User, initiate_ice_restart};
 
 
 pub type PacketSender = tokio::sync::broadcast::Sender<Packet>;
@@ -52,6 +55,12 @@ pub async fn create_peer() -> Result<RTCPeerConnection, Error> {
 
     let registry = register_default_interceptors(Registry::new(), &mut m)?;
     let mut system_engine = SettingEngine::default();
+    system_engine
+        .set_ice_timeouts(
+            Some(Duration::from_secs(1)), 
+            Some(Duration::from_secs(3)), 
+            None
+        );
     system_engine
         .set_interface_filter(
             Box::new(|iface|{
@@ -100,6 +109,71 @@ pub struct StorageItem<'a> {
     pub stats: &'a CurrentStats,
     pub timestamp: DateTime<Utc>,
     pub connection_id: Uuid
+}
+
+pub trait IceRestartExt: Actor where Self::Message: From<RTCIceConnectionState> {
+    const TARGET: Target;
+    const CHECK_ICE_STATE: Self::Message;
+    fn peer_connection(&self) -> &RTCPeerConnection;
+    fn send_target_message(&self, message: SignalMessage) -> impl Future<Output = Result<(), Error>>;
+    fn on_recconnect(&self) -> impl Future<Output = Result<(), Error>>;
+    fn retry_connect_attempts(&mut self) -> &mut u8;
+    fn disconnected(&mut self) -> &mut bool;
+    fn on_ice_connection_state_change(&self, addr: Addr<Self>) {
+        let pc = self.peer_connection();
+        pc.on_ice_connection_state_change(Box::new({
+            let addr = addr.clone();
+            move |state| {
+                let addr = addr.clone();
+                Box::pin(async move {
+                    let _ = addr.send(state.into()).await;
+                })
+            }
+        }));
+    }
+    #[allow(async_fn_in_trait)]
+    async fn handle_ice_state_change(&mut self, addr: &Addr<Self>, state: RTCIceConnectionState) -> Result<(), Error> {
+        match state {
+            RTCIceConnectionState::Failed => {
+                *self.disconnected() = true;
+                let pc = self.peer_connection();        
+                tracing::warn!("[{:?}] ice_state_change to failed", Self::TARGET, );        
+                let message = initiate_ice_restart(pc, Self::TARGET).await?;
+                self.send_target_message(message).await?;
+                if *self.retry_connect_attempts() == 0 {
+                    self.on_recconnect().await?;
+                }
+                *self.retry_connect_attempts() += 1;
+                addr.send(Self::CHECK_ICE_STATE).await?;
+            },
+            RTCIceConnectionState::Connected if *self.disconnected() => {
+                if *self.disconnected() {
+                    tracing::warn!("[{:?}] succesfully reconnected", Self::TARGET);    
+                    self.on_recconnect().await?;    
+                }
+                *self.disconnected() = false;
+                *self.retry_connect_attempts() = 0;
+            },
+            _ => {}
+        }
+        Ok(())
+    }
+    #[allow(async_fn_in_trait)]
+    async fn check_ice_state(&mut self, ctx: &mut actor::Ctx<'_, Self>) -> Result<(), Error> {
+        let current_state = self.peer_connection().ice_connection_state();
+        if current_state == RTCIceConnectionState::Failed {
+            if *self.retry_connect_attempts() < 5 {
+                let addr = ctx.addr.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    let _ = addr.send(current_state.into()).await;
+                });
+            } else {
+                self.stop(ctx).await;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Default, Debug)]

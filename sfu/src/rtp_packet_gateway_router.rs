@@ -134,9 +134,7 @@ pub enum RtpPacketMessage {
 impl<A: Actor, R: RouterContext<A>> Actor for RtpPacketGatewayRouter<A, R> 
     where A::Message: From<RtpPacketMessage> {
     type Message = RtpPacketGatewayRouterMessage<A>;
-    async fn starting(&mut self, _ctx: &crate::actor::Ctx<'_, Self>) {
-        tracing::info!("[RtpPacketForwarder] Starting");
-    }
+    async fn starting(&mut self, _ctx: &crate::actor::Ctx<'_, Self>) {}
     async fn handle(&mut self, ctx: &mut crate::actor::Ctx<'_, Self>, msg: Self::Message) {
         match msg {
             RtpPacketGatewayRouterMessage::Subscribe(sub) => { 

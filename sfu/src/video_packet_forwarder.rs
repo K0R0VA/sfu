@@ -13,6 +13,7 @@ pub struct VideoPacketForwarder {
     current_generated_ts: u32,
     last_sequence_number: u16,
     is_layer_switching: bool,
+    wait_keyframe: bool,
 }
 pub struct RtpPacketCache {
     inner: Box<[Option<Packet>; u16::MAX as usize + 1]>
@@ -45,6 +46,7 @@ impl VideoPacketForwarder {
             last_sequence_number: u16::MAX - 1000,
             rtp_packet_cache: RtpPacketCache::default(),
             is_layer_switching: false, 
+            wait_keyframe: true,
             start_instant: Instant::now(),
             current_generated_ts: 0,
             current_quality: None,
@@ -59,8 +61,9 @@ impl VideoPacketForwarder {
 pub enum VideoPacketForwarderMessage {
     RtpPacket { packet: Packet, quality: StreamQuality },
     Timeout,
+    Reset,
     Start { quality: StreamQuality, gateway_router: Addr<RtpPacketGatewayRouter<VideoPacketForwarder, VideoRouterContext>> },
-    LayerSwitched {gateway_router: Addr<RtpPacketGatewayRouter<VideoPacketForwarder, VideoRouterContext>> },
+    LayerSwitched { quality: StreamQuality, gateway_router: Addr<RtpPacketGatewayRouter<VideoPacketForwarder, VideoRouterContext>> },
     MissedPackets(Vec<u16>)
 }
 
@@ -74,7 +77,7 @@ impl From<RtpPacketMessage> for VideoPacketForwarderMessage {
 }
 
 impl VideoPacketForwarder {
-    async fn forward(&mut self, ctx: &Ctx<'_, Self>, quality: StreamQuality, mut packet: Packet) -> Result<(), Error> {
+    async fn forward(&mut self, ctx: &Ctx<'_, Self>, quality: StreamQuality, mut packet: Packet) {
         if self.is_layer_switching && self.current_quality != Some(quality) {
             self.current_quality = Some(quality);
             self.is_layer_switching = false;
@@ -84,11 +87,11 @@ impl VideoPacketForwarder {
                 }
             }
         }
+        if self.wait_keyframe && 
         if self.current_quality == Some(quality) {
             self.modify_header(&mut packet);
-            self.write_packet(packet).await?;
+            self.write_packet(packet).await;
         }
-        Ok(())
     }
     async fn handle_missed_packets(&mut self, missing_packets: Vec<u16>) -> Result<(), Error> {
         for packet_number in missing_packets {
@@ -98,10 +101,14 @@ impl VideoPacketForwarder {
         }
         Ok(())
     }
-    async fn write_packet(&mut self, packet: Packet) -> Result<(), Error> {
-        self.track.write_rtp(&packet).await?;
+    async fn write_packet(&mut self, packet: Packet)  {
+        match self.track.write_rtp(&packet).await {
+            Ok(_) => {},
+            Err(e) => {
+                tracing::warn!("{e}");
+            } 
+        }
         self.rtp_packet_cache.insert(packet);
-        Ok(())
     }
     fn modify_header(&mut self, packet: &mut Packet) {
         self.last_sequence_number = self.last_sequence_number.wrapping_add(1);
@@ -118,27 +125,27 @@ impl VideoPacketForwarder {
 impl Actor for VideoPacketForwarder {
     type Message = VideoPacketForwarderMessage;
     async fn starting(&mut self, _ctx: &crate::actor::Ctx<'_, Self>) {
-        tracing::info!("[VideoPacketForwarder] Starting");
     }
     async fn handle(&mut self, ctx: &mut crate::actor::Ctx<'_, Self>, msg: Self::Message) {
         match msg {
+            VideoPacketForwarderMessage::Reset => {
+                self.start_instant = Instant::now();
+                self.current_generated_ts = 0;
+                self.last_sequence_number = 0;
+                if let Some(current_channel) = &self.current_channel {
+                    current_channel.do_send(RtpPacketGatewayRouterMessage::Unsubscribe(ctx.addr.clone())).ok_or_terminate(ctx);
+                    current_channel.do_send(RtpPacketGatewayRouterMessage::Subscribe(ctx.addr.clone())).ok_or_terminate(ctx);
+                }
+            }
             VideoPacketForwarderMessage::LayerSwitched {
+                quality,
                 gateway_router: forwarder
-            } 
-            if !self.is_layer_switching => {
-                tracing::info!("VideoPacketForwarderMessage::LayerSwitched {:?}", ctx.addr);
+            } =>
+            if !self.is_layer_switching && self.current_quality != Some(quality) {
+                tracing::info!("[VideoPacketForwarderMessage::LayerSwitched] {:?}", quality);
                 self.is_layer_switching = true;
                 forwarder.do_send(RtpPacketGatewayRouterMessage::Subscribe(ctx.addr.clone())).ok_or_terminate(ctx);
                 self.pending_channel = Some(forwarder);
-            },
-            VideoPacketForwarderMessage::LayerSwitched {
-                gateway_router: forwarder
-            } => {
-                let addr = ctx.addr.clone();
-                tokio::spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(500)).await;
-                    let _ = addr.send(VideoPacketForwarderMessage::LayerSwitched { gateway_router: forwarder }).await;
-                });
             },
             VideoPacketForwarderMessage::Start { quality, gateway_router: forwarder } => {
                 self.current_quality = Some(quality);
@@ -147,7 +154,7 @@ impl Actor for VideoPacketForwarder {
                 self.start_instant = Instant::now();
             }
             VideoPacketForwarderMessage::RtpPacket {packet, quality} => {
-                self.forward(ctx, quality, packet).await.ok_or_terminate(ctx);
+                self.forward(ctx, quality, packet).await;
             },
             VideoPacketForwarderMessage::Timeout => {
                 let message= VideoLayerManagerMessage::FallbackToLowQuality;
@@ -156,7 +163,8 @@ impl Actor for VideoPacketForwarder {
                     .await
                     .ok_or_terminate(ctx);
             }
-            VideoPacketForwarderMessage::MissedPackets(missed_packets) =>{ 
+            VideoPacketForwarderMessage::MissedPackets(missed_packets) => { 
+                tracing::warn!("MissedPackets");
                 self.handle_missed_packets(missed_packets).await.ok_or_terminate(ctx);
             }
         }

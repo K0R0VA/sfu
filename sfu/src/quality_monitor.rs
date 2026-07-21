@@ -119,11 +119,8 @@ impl<C: SyncChannel, S: Storage> Actor for QualityMonitor<C, S> {
     async fn starting(&mut self, ctx: &crate::actor::Ctx<'_, Self>) {
         let stream = IntervalStream::new(interval(self.update_period));
         ctx.addr.add_stream(stream, |_| StreamItem::Next(QualityMonitorMessage::Ping));
-        tracing::info!("[QualityMonitor] starting")
     }
-    async fn stopping(self, _ctx: &crate::actor::Ctx<'_, Self>) {
-        tracing::info!("[QualityMonitor] Stopping")
-    }
+    async fn stopping(self, _ctx: &crate::actor::Ctx<'_, Self>) {}
 }
 
 impl<C: SyncChannel, S: Storage> QualityMonitor<C, S> {
@@ -141,7 +138,7 @@ impl<C: SyncChannel, S: Storage> QualityMonitor<C, S> {
             last_stats_time: Instant::now(),
             current_quality: None,
             consecutive_high_signals: 0,
-            update_period: Duration::from_secs(1)
+            update_period: Duration::from_secs(10)
         })
     }
     async fn update_stats(&mut self) {

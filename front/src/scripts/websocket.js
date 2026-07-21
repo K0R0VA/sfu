@@ -67,7 +67,8 @@ export class UserWebsocket {
                             break;
                         }
                         case 'ice_restart': {
-                            await this.peer_connection.restart_ice(message.target);
+                            console.log('ice_restart');
+                            await this.peer_connection.restart_ice(message);
                             break;
                         }
                         case 'answer': {
@@ -84,7 +85,11 @@ export class UserWebsocket {
                 }
             }
         };
-        this.ws.onclose = () => {
+        const RECONNECTABLE_CODES = [1001, 1005, 1006, 1011, 1012, 1013];
+        this.ws.onclose = (e) => {
+            if (RECONNECTABLE_CODES.includes(e.code)) {
+                // todo add reconnect;
+            }
             console.log("🔴 Соединение закрыто");
             this.room_status.value = "Соединение потеряно";
         };
