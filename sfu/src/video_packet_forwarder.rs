@@ -150,7 +150,7 @@ impl Actor for VideoPacketForwarder {
                 self.forward(ctx, quality, packet).await.ok_or_terminate(ctx);
             },
             VideoPacketForwarderMessage::Timeout => {
-                let message= VideoLayerManagerMessage::SwitchToLowQuality;
+                let message= VideoLayerManagerMessage::FallbackToLowQuality;
                 self.video_layer_manager
                     .send(message)
                     .await

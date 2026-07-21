@@ -106,13 +106,13 @@ export class WebrtcConnection {
                 {
                     rid: 'low',
                     maxBitrate: bitrateSettings.low,
-                    scaleResolutionDownBy: getRoundedResolution(BASE_HEIGHT, BASE_WIDTH, 4.0),
+                    scaleResolutionDownBy: getRoundedResolution(BASE_HEIGHT, BASE_WIDTH, 8.0),
                     maxFramerate: 24,
                 },
                 {
                     rid: 'mid',
                     maxBitrate: bitrateSettings.mid,
-                    scaleResolutionDownBy: getRoundedResolution(BASE_HEIGHT, BASE_WIDTH, 2.0),
+                    scaleResolutionDownBy: getRoundedResolution(BASE_HEIGHT, BASE_WIDTH, 4.0),
                     maxFramerate: 30
                 },
                 {

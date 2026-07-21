@@ -104,7 +104,7 @@ async fn connect_many_users_to_room() -> Result<(), Error> {
     let _ = server.send(ServerMessage::CreateRoom { name: "".to_string(), response_channel: tx }).await;
     let (_, room) = rx.await.unwrap();
     let mut tasks = Vec::with_capacity(24);
-    let counter = Arc::new(AtomicU8::default());
+    let barrier = Arc::new(tokio::sync::Barrier::new(24));
     for _ in 0 .. 24 {
         let (channel, mut client, stream) = spawn_test_client().await?;
         let user = User::new(channel, room.clone()).await?;
@@ -113,16 +113,13 @@ async fn connect_many_users_to_room() -> Result<(), Error> {
         user.add_stream(tokio_stream::wrappers::ReceiverStream::new(stream), 
         |m| Next(sfu::user::UserMessage::SyncMessage(sfu::user::SyncMessage::Message(m))));
         let _ = room.send(RoomMessage::Join { peer_id, addr: user }).await;
-        let counter = counter.clone();
+        let barrier = barrier.clone();        
         let task = tokio::spawn(async move {
             client.setup().await?;
             for _stage in 0 .. 4 {
                 client.handle_message().await?;
             } 
-            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            while counter.load(Relaxed) != 24 {
-                tokio::task::yield_now().await;
-            }   
+            barrier.wait().await;
             assert_eq!(client.markers.send_offer, true);
             assert_eq!(client.markers.ice_connected, true);
             assert_eq!(client.markers.receive_answer, true);

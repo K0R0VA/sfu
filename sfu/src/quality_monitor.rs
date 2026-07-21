@@ -36,7 +36,7 @@ impl From<DeviceType> for QualityThresholds {
         match value {
             DeviceType::Desktop => QualityThresholds {
                 low_bitrate: 400_000,
-                mid_bitrate: 2_500_000,
+                mid_bitrate: 1_500_000,
                 high_bitrate: 4_000_000,
                 low_loss: 15.0,
                 mid_loss: 8.0,
@@ -88,7 +88,6 @@ impl<C: SyncChannel, S: Storage> Actor for QualityMonitor<C, S> {
                     };
                     let should_switch = match quality.cmp(&current_quality) {
                         std::cmp::Ordering::Equal => {
-                            self.consecutive_high_signals = 0;
                             false
                         },
                         std::cmp::Ordering::Greater if self.consecutive_high_signals > REQUIRED_STABLE_SIGNALS => {
@@ -234,15 +233,19 @@ impl<C: SyncChannel, S: Storage> QualityMonitor<C, S> {
     }
     fn get_quality(&self) -> Option<StreamQuality> {
         if self.current_stats.last_bytes_received == 0 {
-            return None
+            return None;
         }
-        if self.current_stats.packet_loss > self.thresholds.low_loss || self.current_stats.bitrate_bps < self.thresholds.low_bitrate {
+        // От худшего к лучшему
+        if self.current_stats.packet_loss > self.thresholds.high_loss || 
+            self.current_stats.bitrate_bps < self.thresholds.low_bitrate {
             return Some(StreamQuality::Low);
         }
-        if self.current_stats.packet_loss > self.thresholds.mid_loss || self.current_stats.bitrate_bps < self.thresholds.mid_bitrate {
+        if self.current_stats.packet_loss > self.thresholds.mid_loss ||
+        self.current_stats.bitrate_bps < self.thresholds.mid_bitrate {
             return Some(StreamQuality::Mid);
         }
-        if self.current_stats.packet_loss < self.thresholds.high_loss && self.current_stats.bitrate_bps > self.thresholds.high_bitrate {
+        if self.current_stats.packet_loss <= self.thresholds.low_loss &&
+        self.current_stats.bitrate_bps >= self.thresholds.high_bitrate {
             return Some(StreamQuality::High);
         }
         None

@@ -92,14 +92,14 @@ const applyNetworkProfile = async () => {
         high_layer.active = false; 
         break;
       case 'mid':
-        parameters.encodings[0].maxBitrate = 400_000;
+        low_layer.maxBitrate = 400_000;
         mid_layer.active = true; 
         high_layer.active = false; 
         break;
       case 'original':
       default:
         // Полностью очищаем лимиты для возврата к дефолту браузера
-        parameters.encodings[0].maxBitrate = 400_000;
+        low_layer.maxBitrate = 400_000;
         mid_layer.active = true; 
         high_layer.active = true; 
         break;

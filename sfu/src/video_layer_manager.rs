@@ -14,7 +14,6 @@ pub struct VideoLayerManager {
     pub packet_forwarder: WeakAddr<VideoPacketForwarder>,
     pub connection_quality: StreamQuality,
     pub active_quality: Option<StreamQuality>,
-    pub is_forwarder_running: bool,
 }
 
 #[derive(Clone)]
@@ -50,7 +49,7 @@ impl VideoLayerManager {
             .sender()
             .await;
         quality_layers.insert(quality, quality_layer);
-        let this = Self { pc, peer_id, track, quality_layers, active_track, active_quality: None, connection_quality: current_connection_quality, packet_forwarder: WeakAddr::default(), is_forwarder_running: false };
+        let this = Self { pc, peer_id, track, quality_layers, active_track, active_quality: None, connection_quality: current_connection_quality, packet_forwarder: WeakAddr::default() };
         Ok(this) 
     }
     fn spawn_notify_task(&self, addr: Addr<Self>, quality: StreamQuality, wake_notification: Arc<Notify> ) {
@@ -69,9 +68,8 @@ impl VideoLayerManager {
 
 pub enum VideoLayerManagerMessage {
     AddLayer { quality: StreamQuality, layer: QualityLayer },
-    RunFirstLayer,
     SwitchQualityLayer { to: StreamQuality },
-    SwitchToLowQuality,
+    FallbackToLowQuality,
     LayerAwake { quality: StreamQuality },
     Drop,
     ForcePli
@@ -86,17 +84,10 @@ impl Actor for VideoLayerManager {
                 self.quality_layers.insert(quality, layer.clone());
                 self.spawn_notify_task(ctx.addr.clone(), quality, layer.wake_notification);
                 if quality == self.connection_quality {
-                    let message = match self.is_forwarder_running {
-                        true => VideoPacketForwarderMessage::LayerSwitched {
-                            gateway_router: layer.gateway_router.clone()
-                        },
-                        false => VideoPacketForwarderMessage::Start {
-                            quality,
-                            gateway_router: layer.gateway_router
-                        }
+                    let message = VideoPacketForwarderMessage::LayerSwitched {
+                        gateway_router: layer.gateway_router.clone()
                     };
                     self.active_quality = Some(quality);
-                    self.is_forwarder_running = true;
                     self.packet_forwarder
                         .try_send(message)
                         .await
@@ -109,6 +100,10 @@ impl Actor for VideoLayerManager {
                 layer.keyframe_interceptor.send(RequestKeyframe).await.ok_or_terminate(ctx);
             }
             VideoLayerManagerMessage::SwitchQualityLayer { to  } => {
+                if Some(to) == self.active_quality {
+                    self.connection_quality = to;
+                    return;
+                }
                 let Some(layer) = self.quality_layers.get(&to) else { tracing::warn!("Missing layer"); return ; };
                 self.active_quality = Some(to);
                 self.connection_quality = to;
@@ -119,7 +114,7 @@ impl Actor for VideoLayerManager {
                     .await
                     .ok_or_terminate(ctx);
             },
-            VideoLayerManagerMessage::SwitchToLowQuality => {
+            VideoLayerManagerMessage::FallbackToLowQuality  => if self.active_quality != Some(StreamQuality::Low) {
                 if let Some(layer) = self.quality_layers.get(&StreamQuality::Low) {
                 self.active_quality = Some(StreamQuality::Low);
                 self.packet_forwarder
@@ -141,20 +136,6 @@ impl Actor for VideoLayerManager {
                     .await
                     .ok_or_terminate(ctx);
             }
-            VideoLayerManagerMessage::RunFirstLayer => if !self.is_forwarder_running {
-                self.is_forwarder_running = true;
-                if let Some((quality, layer)) = self.quality_layers.iter().next() {
-                    self.active_quality = Some(*quality);
-                    let message = VideoPacketForwarderMessage::Start {
-                        quality: *quality,
-                        gateway_router: layer.gateway_router.clone()
-                    };
-                    self.packet_forwarder
-                        .try_send(message)
-                        .await
-                        .ok_or_terminate(ctx);
-                }
-            }
             VideoLayerManagerMessage::Drop => self.stop(ctx).await,
         }
     }
@@ -166,10 +147,6 @@ impl Actor for VideoLayerManager {
             .start_with_capacity(2048);
         let forwarder = packet_forwarder.clone();
         self.packet_forwarder.set_addr(packet_forwarder);
-        if let Some((quality, layer)) = self.quality_layers.iter().next() {
-            let wake_notification = layer.wake_notification.clone();
-            self.spawn_notify_task(addr.clone(), *quality, wake_notification);
-        }
         tokio::spawn(async move {
             loop {
                 let mut rtcp_buf = [0u8; 1500];
@@ -198,22 +175,18 @@ impl Actor for VideoLayerManager {
                 }
             }
         });
-        let wait_period = Duration::from_millis(500);
-        if let Some(layer) = self.quality_layers.get(&self.connection_quality) {
+        let addr = ctx.addr.clone();
+        if let Some((quality, layer)) = self.quality_layers.iter().next() {
+            let wake_notification = layer.wake_notification.clone();
+            self.spawn_notify_task(addr.clone(), *quality, wake_notification);
+            self.active_quality = Some(*quality);
             let _ = self.packet_forwarder
                         .try_send(VideoPacketForwarderMessage::Start {
-                            quality: self.connection_quality,
+                            quality: *quality,
                             gateway_router: layer.gateway_router.clone()
                         })
                         .await;
-            self.is_forwarder_running = true;
-        } else {
-            let addr = ctx.addr.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(wait_period).await;
-                let _ = addr.send(VideoLayerManagerMessage::RunFirstLayer).await;
-            });
-        }
+        } 
     }
 
     async fn stopping(mut self, _: &crate::actor::Ctx<'_, Self>) {

@@ -86,6 +86,7 @@ impl<A: Actor, R: RouterContext<A>> RtpPacketGatewayRouter<A, R> where A::Messag
         let receiver = this.clone();
         tokio::spawn(async move {
             let timeout_period = Duration::from_millis(500);
+            let mut is_timeout_send = false;
             loop {
                 let read_rtp_fut = track.read_rtp();
                 let fut = timeout(timeout_period, read_rtp_fut);
@@ -96,7 +97,11 @@ impl<A: Actor, R: RouterContext<A>> RtpPacketGatewayRouter<A, R> where A::Messag
                         let _ = receiver.terminate().await;
                         break;
                     },
-                    Err(_) =>  RtpPacketGatewayRouterMessage::Timeout
+                    Err(_) if is_timeout_send => continue,
+                    Err(_) => {
+                        is_timeout_send = true;
+                        RtpPacketGatewayRouterMessage::Timeout
+                    }
                 };
                 let Ok(_) = receiver.do_send(message) else { break; };
             }
@@ -137,7 +142,7 @@ impl<A: Actor, R: RouterContext<A>> Actor for RtpPacketGatewayRouter<A, R>
             RtpPacketGatewayRouterMessage::Subscribe(sub) => { 
                 let is_new = self.subscriptions.insert(sub);
                 if !is_new {
-                    tracing::warn!("Sub was already insert");
+                    tracing::warn!("Sub was already insert at quality {:?}", self.context.stream_quality());
                 }
                 self.context.send_fir();
             },
