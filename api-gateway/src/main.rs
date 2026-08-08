@@ -19,12 +19,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::fmt()
         .with_env_filter("webrtc=ERROR,webrtc_ice=ERROR,api_gateway=INFO,sfu=INFO")
         .init();
-    let room_actor = Server::default().start();
+    let server = Server::default().start();
     let api_router = Router::new()
         .route("/rooms", get(rooms))
         .route("/room", post(create_room))
         .route("/room/{room_id}", get(ws_handler))
-        .with_state(room_actor);
+        .with_state(server);
     let app = Router::new()
         .nest_service("/assets", ServeDir::new("front/dist/assets"))
         .fallback_service(ServeFile::new("front/dist/index.html"))

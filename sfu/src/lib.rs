@@ -28,7 +28,7 @@ use webrtc::rtp::packet::Packet;
 use webrtc::rtp_transceiver::rtp_codec::{RTCRtpHeaderExtensionCapability, RTPCodecType};
 use crate::actor::{Actor, Addr};
 use crate::error::Error;
-use crate::user::{SignalMessage, Target, User, initiate_ice_restart};
+use crate::user::{SignalMessage, Target, initiate_ice_restart};
 
 
 pub type PacketSender = tokio::sync::broadcast::Sender<Packet>;
@@ -55,12 +55,6 @@ pub async fn create_peer() -> Result<RTCPeerConnection, Error> {
 
     let registry = register_default_interceptors(Registry::new(), &mut m)?;
     let mut system_engine = SettingEngine::default();
-    system_engine
-        .set_ice_timeouts(
-            Some(Duration::from_secs(1)), 
-            Some(Duration::from_secs(3)), 
-            None
-        );
     system_engine
         .set_interface_filter(
             Box::new(|iface|{
@@ -116,7 +110,7 @@ pub trait IceRestartExt: Actor where Self::Message: From<RTCIceConnectionState> 
     const CHECK_ICE_STATE: Self::Message;
     fn peer_connection(&self) -> &RTCPeerConnection;
     fn send_target_message(&self, message: SignalMessage) -> impl Future<Output = Result<(), Error>>;
-    fn on_recconnect(&self) -> impl Future<Output = Result<(), Error>>;
+    fn on_reconnect(&self) -> impl Future<Output = Result<(), Error>>;
     fn retry_connect_attempts(&mut self) -> &mut u8;
     fn disconnected(&mut self) -> &mut bool;
     fn on_ice_connection_state_change(&self, addr: Addr<Self>) {
@@ -140,17 +134,16 @@ pub trait IceRestartExt: Actor where Self::Message: From<RTCIceConnectionState> 
                 tracing::warn!("[{:?}] ice_state_change to failed", Self::TARGET, );        
                 let message = initiate_ice_restart(pc, Self::TARGET).await?;
                 self.send_target_message(message).await?;
-                if *self.retry_connect_attempts() == 0 {
-                    self.on_recconnect().await?;
-                }
                 *self.retry_connect_attempts() += 1;
                 addr.send(Self::CHECK_ICE_STATE).await?;
             },
+            RTCIceConnectionState::Disconnected => {
+                tracing::info!("[{:?}] Disconnected", Self::TARGET);
+                *self.disconnected() = true;
+            }
             RTCIceConnectionState::Connected if *self.disconnected() => {
-                if *self.disconnected() {
-                    tracing::warn!("[{:?}] succesfully reconnected", Self::TARGET);    
-                    self.on_recconnect().await?;    
-                }
+                tracing::warn!("[{:?}] succesfully reconnected", Self::TARGET);    
+                self.on_reconnect().await?;    
                 *self.disconnected() = false;
                 *self.retry_connect_attempts() = 0;
             },

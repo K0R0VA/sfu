@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 use uuid::Uuid;
 use webrtc::{peer_connection::{RTCPeerConnection, offer_answer_options::RTCOfferOptions, },  };
-use crate::{Storage, SyncChannel, actor::{Actor, Addr, Ctx, StoppingExt, WeakAddr}, audio_packet_forwarder::AudioPacketForwarder, error::Error, keyframe_interceptor::KeyframeInterceptor, publisher::{Publisher, PublisherMessage}, quality_monitor::DeviceType, room::{Codek, Room, RoomMessage, StreamQuality}, rtp_packet_gateway_router::{AudioRouterContext, RouterContext, RtpPacketGatewayRouter, RtpPacketMessage, VideoRouterContext}, subscriber::{Subscriber, SubscriberMessage}, video_packet_forwarder::VideoPacketForwarder};
+use crate::{Storage, SyncChannel, actor::{Actor, Addr, Ctx, StoppingExt, WeakAddr}, audio_packet_forwarder::AudioPacketForwarder, error::Error, keyframe_interceptor::KeyframeInterceptor, publisher::{Publisher, PublisherMessage}, quality_monitor::DeviceType, room::{Codec, Room, RoomMessage, StreamQuality}, rtp_packet_gateway_router::{AudioRouterContext, RouterContext, RouterWaker, RtpPacketGatewayRouter, RtpPacketMessage, VideoRouterContext}, subscriber::{Subscriber, SubscriberMessage}, video_packet_forwarder::VideoPacketForwarder};
 
 pub struct User<C: SyncChannel, S: Storage> {
     pub room: Addr<Room<C, S>>,
@@ -33,7 +33,12 @@ pub enum UserMessage {
     SwitchQualityLayer { quality: StreamQuality },
     SyncMessage(SyncMessage),
     ConnectAudio(ConnectionRequest<AudioPacketForwarder, AudioRouterContext>),
-    ConnectVideo { request: ConnectionRequest<VideoPacketForwarder, VideoRouterContext>, quality: StreamQuality , keyframe_interceptor: Addr<KeyframeInterceptor>, wake_notification: Arc<Notify>},
+    ConnectVideo { 
+        request: ConnectionRequest<VideoPacketForwarder, VideoRouterContext>, 
+        quality: StreamQuality , 
+        keyframe_interceptor: Addr<KeyframeInterceptor>, 
+        wake_notification: RouterWaker
+    },
     Unsubscribe {
         user_id: Uuid,
     },
@@ -49,7 +54,7 @@ pub enum SyncMessage {
 pub struct ConnectionRequest<T: Actor, R: RouterContext<T>> where T::Message: From<RtpPacketMessage>  {
     pub peer_id: Uuid,
     pub gateway_router: Addr<RtpPacketGatewayRouter<T, R>>,
-    pub codec_mime_type: Codek,
+    pub codec_mime_type: Codec,
 }
 
 #[derive(Clone, Copy, Debug)]

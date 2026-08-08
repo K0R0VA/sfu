@@ -2,7 +2,7 @@ use std::{str::FromStr, sync::Arc};
 use tokio::sync::Notify;
 use uuid::Uuid;
 use webrtc::{ice_transport::{ice_candidate::RTCIceCandidateInit, ice_connection_state::RTCIceConnectionState}, peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription}, rtp_transceiver::rtp_codec::RTPCodecType};
-use crate::{IceRestartExt, Storage, SyncChannel, actor::{Actor, Addr, Ctx, StoppingExt, WeakAddr}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, keyframe_interceptor::{KeyframeInterceptor, RequestKeyframe}, quality_monitor::{DeviceType, QualityMonitor, QualityThresholds}, room::{AudioRouterStream, Codek, Room, RoomMessage, StreamQuality, VideoRouterStream}, rtp_packet_gateway_router::{AudioRouter, AudioRouterContext, RouterContext, RtpPacketGatewayRouter, RtpPacketMessage, VideoRouter, VideoRouterContext}, user::{IceCandidate, MessageType, SignalMessage, Target, User, UserMessage, initiate_ice_restart}, video_packet_forwarder::VideoPacketForwarder};
+use crate::{IceRestartExt, Storage, SyncChannel, actor::{Actor, Addr, Ctx, StoppingExt, WeakAddr}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, keyframe_interceptor::{KeyframeInterceptor, RequestKeyframe}, quality_monitor::{DeviceType, QualityMonitor, QualityThresholds}, room::{AudioRouterStream, Codec, Room, RoomMessage, StreamQuality, VideoRouterStream}, rtp_packet_gateway_router::{AudioRouter, AudioRouterContext, RouterContext, RtpPacketGatewayRouter, RtpPacketMessage, VideoRouter, VideoRouterContext}, user::{IceCandidate, MessageType, SignalMessage, Target, User, UserMessage, initiate_ice_restart}, video_packet_forwarder::VideoPacketForwarder};
 
 pub struct Publisher<C: SyncChannel, S: Storage> {
     pub peer_id: Uuid,
@@ -128,7 +128,7 @@ impl<C: SyncChannel, S: Storage> Actor for Publisher<C, S> {
             let addr = addr.clone();
             let ssrc = track.ssrc();
             let mime_type = track.codec().capability.mime_type;
-            let mime_type = Codek::from_str(&mime_type).unwrap_or_default();
+            let mime_type = Codec::from_str(&mime_type).unwrap_or_default();
             let kind = track.kind();
             let rid = StreamQuality::from_str(track.rid());
             Box::pin(async move {
@@ -144,8 +144,8 @@ impl<C: SyncChannel, S: Storage> Actor for Publisher<C, S> {
                     RTPCodecType::Video => {
                         let keyframe_interceptor = KeyframeInterceptor::new(pc.clone(), ssrc).start();
                         let quality = rid.unwrap_or(StreamQuality::High);
-                        let wake_notifier = Arc::new(Notify::new());
-                        let context = VideoRouterContext::new(pc, quality, ssrc, wake_notifier.clone());   
+                        let (wake_rx, wake_tx) = tokio::sync::broadcast::channel(1);
+                        let context = VideoRouterContext::new(pc, quality, ssrc, wake_rx);   
                         let rtp_packet_forwarder= RtpPacketGatewayRouter::<VideoPacketForwarder, VideoRouterContext>::spawn(track, context);
                         addr.send(
                             PublisherMessage::NewVideoTrack {
@@ -154,7 +154,7 @@ impl<C: SyncChannel, S: Storage> Actor for Publisher<C, S> {
                                     rtp_packet_forwarder, 
                                     codek: mime_type, 
                                     keyframe_interceptor, 
-                                    wake_notifier 
+                                    wake_tx: Arc::new(wake_tx) 
                                 }
                             }
                         )
@@ -222,7 +222,11 @@ impl<C: SyncChannel, S: Storage> Publisher<C, S> {
 impl<C: SyncChannel, S: Storage> IceRestartExt for Publisher<C, S> {
     const CHECK_ICE_STATE: Self::Message = PublisherMessage::CheckIceState;
     const TARGET: Target = Target::Publisher;
-    async fn on_recconnect(&self) -> Result<(), Error> {
+    async fn on_reconnect(&self) -> Result<(), Error> {
+        tracing::info!("try reconnect");
+        for interceptor in &self.video_track_keyframe_interceptors {
+            interceptor.send(RequestKeyframe::Fir).await?;
+        }
         Ok(())
     }
     fn disconnected(&mut self) -> &mut bool {

@@ -1,9 +1,8 @@
-use std::{collections::HashMap, fmt::Display, str::FromStr, sync::Arc};
+use std::{collections::HashMap, fmt::Display, str::FromStr};
 use serde::{Deserialize, Serialize};
-use tokio::sync::Notify;
 use uuid::Uuid;
 
-use crate::{Storage, SyncChannel, actor::{Actor, Addr, Ctx}, audio_packet_forwarder::AudioPacketForwarder, error::Error, keyframe_interceptor::KeyframeInterceptor, rtp_packet_gateway_router::{AudioRouter, RtpPacketGatewayRouter, RtpPacketMessage, VideoRouter}, user::{ConnectionRequest, User, UserMessage}, video_packet_forwarder::VideoPacketForwarder};
+use crate::{Storage, SyncChannel, actor::{Actor, Addr, Ctx}, error::Error, keyframe_interceptor::KeyframeInterceptor, rtp_packet_gateway_router::{AudioRouter, RouterWaker, RtpPacketGatewayRouter, RtpPacketMessage, VideoRouter}, user::{ConnectionRequest, User, UserMessage}, video_packet_forwarder::VideoPacketForwarder};
 
 pub struct Room<C: SyncChannel, S: Storage> {
     pub id: Uuid,
@@ -28,15 +27,15 @@ pub struct Peer<C: SyncChannel, S: Storage> {
 #[derive(Clone)]
 pub struct AudioRouterStream {
     pub router: AudioRouter,
-    pub codek: Codek
+    pub codek: Codec
 }
 
 #[derive(Clone)]
 pub struct VideoRouterStream {
     pub router: VideoRouter,
-    pub codek: Codek,
+    pub codek: Codec,
     pub keyframe_interceptor: Addr<KeyframeInterceptor>,
-    pub wake_notifier: Arc<Notify>
+    pub wake_tx: RouterWaker,
 }
 
 impl<C: SyncChannel, S: Storage> Peer<C, S> {
@@ -49,7 +48,7 @@ impl<C: SyncChannel, S: Storage> Peer<C, S> {
 }
 
 #[derive(Clone, Default)]
-pub enum Codek {
+pub enum Codec {
     #[default]
     VP8,
     VP9,
@@ -57,26 +56,26 @@ pub enum Codek {
     Audio (String)
 }
 
-impl Display for Codek {
+impl Display for Codec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Codek::H264 => write!(f, "video/H264"),
-            Codek::VP8 => write!(f, "video/VP8"),
-            Codek::VP9 => write!(f, "video/VP9"),
-            Codek::Audio(audio) => write!(f, "{audio}")
+            Codec::H264 => write!(f, "video/H264"),
+            Codec::VP8 => write!(f, "video/VP8"),
+            Codec::VP9 => write!(f, "video/VP9"),
+            Codec::Audio(audio) => write!(f, "{audio}")
 
         }
     }
 }
 
-impl FromStr for Codek {
+impl FromStr for Codec {
     type Err = Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "video/VP8" => Ok(Codek::VP8),
-            "video/VP9" => Ok(Codek::VP9),
-            "video/H264" => Ok(Codek::H264),
-            mime_type => Ok(Codek::Audio(mime_type.to_string()))
+            "video/VP8" => Ok(Codec::VP8),
+            "video/VP9" => Ok(Codec::VP9),
+            "video/H264" => Ok(Codec::H264),
+            mime_type => Ok(Codec::Audio(mime_type.to_string()))
         }
     }
 }
@@ -194,7 +193,7 @@ impl<C: SyncChannel, S: Storage> Room<C, S> {
                     codec_mime_type: video_router_stream.codek.clone(),
                 },
                 keyframe_interceptor: video_router_stream.keyframe_interceptor.clone(),
-                wake_notification: video_router_stream.wake_notifier.clone()
+                wake_notification: video_router_stream.wake_tx.clone()
             }).await;
         }
     }
@@ -219,7 +218,7 @@ impl<C: SyncChannel, S: Storage> Room<C, S> {
                         gateway_router: stream.router.clone()
                     },
                     keyframe_interceptor: stream.keyframe_interceptor.clone(),
-                    wake_notification: stream.wake_notifier.clone()
+                    wake_notification: stream.wake_tx.clone()
                 }).await;
             }
         }

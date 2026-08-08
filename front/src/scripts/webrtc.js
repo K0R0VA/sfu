@@ -7,6 +7,7 @@ export class WebrtcConnection {
         }
         const subscriber_pc = new RTCPeerConnection(config);
         const publisher_pc = new RTCPeerConnection(config);
+        
         subscriber_pc.ontrack = ({ streams, track }) => {
             const remoteStream = streams[0];
             const rawId = remoteStream.id.split("_")[1];
@@ -46,6 +47,33 @@ export class WebrtcConnection {
         this.subscriber_pc = subscriber_pc;
         this.publisher_pc = publisher_pc;
         this.ws = ws;
+        this.publisher_pc.onconnectionstatechange = (e) => {
+            switch (this.publisher_pc.connectionState) {
+                case 'failed':
+                case 'closed':
+                case 'disconnected': {
+                    let parameters = this.video_transceiver.sender.getParameters();
+                    parameters.encodings.forEach(e => {
+                        e.active = false;
+                    });
+                    this.video_transceiver.sender.setParameters(parameters);
+                    break;
+                }
+                case 'connected': {
+                    console.log('connected');
+                    let parameters = this.video_transceiver.sender.getParameters();
+                    parameters.encodings.forEach(e => {
+                        e.active = true;
+                    });
+                    this.video_transceiver.sender.setParameters(parameters);
+                    break;
+                }
+                case 'connecting': {
+                    console.log('connecting');
+                    break;
+                }
+            }
+        }
     }
     async add_ice_candidate(message) {
         const iceCandidate = new RTCIceCandidate({

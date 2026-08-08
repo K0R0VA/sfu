@@ -1,31 +1,33 @@
-use std::{collections::HashSet, sync::Arc, time::Duration};
-use tokio::{sync::Notify, time::timeout};
+use std::{collections::HashSet, sync::Arc, time::{Duration, Instant}};
+use tokio::{time::timeout};
 use webrtc::{peer_connection::RTCPeerConnection, rtcp::payload_feedbacks::{full_intra_request::{FirEntry, FullIntraRequest}, picture_loss_indication::PictureLossIndication}, rtp::packet::Packet, track::track_remote::TrackRemote};
 use crate::{actor::{Actor, Addr, StoppingExt}, audio_packet_forwarder::AudioPacketForwarder, error::Error, room::StreamQuality, video_packet_forwarder::VideoPacketForwarder,};
 
 pub struct RtpPacketGatewayRouter<A: Actor, T> {
     pub subscriptions: HashSet<Addr<A>>,
+    pub period_packets: usize,
+    pub period: Instant,
     pub context: T,
 }
-
+#[derive(Clone)]
 pub struct VideoRouterContext {
     pub pc: Arc<RTCPeerConnection>,
     pub stream_quality: StreamQuality,
     pub ssrc: u32,
     pub fir_sequence: u8,
     pub is_sleeping: bool,
-    pub wake_notifier: Arc<Notify>
+    pub wake_notifier: tokio::sync::broadcast::Sender<()>,
 }
 
 impl VideoRouterContext {
-    pub fn new(pc: Arc<RTCPeerConnection>, stream_quality: StreamQuality, ssrc: u32, wake_notifier: Arc<Notify> ) -> Self {
+    pub fn new(pc: Arc<RTCPeerConnection>, stream_quality: StreamQuality, ssrc: u32, wake_notifier: tokio::sync::broadcast::Sender<()> ) -> Self {
         Self {
             fir_sequence: 0,
             is_sleeping: false,
             pc,
             ssrc,
             stream_quality,
-            wake_notifier
+            wake_notifier,
         }
     }
 }
@@ -50,7 +52,8 @@ impl<A: Actor> RouterContext<A> for VideoRouterContext where A::Message: From<Rt
     }
     fn try_awake(&mut self) {
         if self.is_sleeping {
-            self.wake_notifier.notify_waiters();
+            let _ = self.wake_notifier.send(());
+            self.is_sleeping = false;
         }
     }
     fn set_sleeping(&mut self) {
@@ -60,7 +63,7 @@ impl<A: Actor> RouterContext<A> for VideoRouterContext where A::Message: From<Rt
         self.stream_quality
     }
 }
-
+#[derive(Clone, Copy)]
 pub struct AudioRouterContext {}
 
 impl<A: Actor> RouterContext<A> for AudioRouterContext where A::Message: From<RtpPacketMessage> {
@@ -80,18 +83,23 @@ impl<A: Actor, R: RouterContext<A>> RtpPacketGatewayRouter<A, R> where A::Messag
         ) -> Addr<Self> {
         let this: Addr<RtpPacketGatewayRouter<A, R>> = Self {
             subscriptions: HashSet::new(), 
-            context
+            context,
+            period: Instant::now(), 
+            period_packets: 0
         }
-            .start_with_capacity(32);
+            .start_with_capacity(2048);
         let receiver = this.clone();
         tokio::spawn(async move {
-            let timeout_period = Duration::from_millis(500);
+            let timeout_period = Duration::from_millis(300);
             let mut is_timeout_send = false;
             loop {
                 let read_rtp_fut = track.read_rtp();
-                let fut = timeout(timeout_period, read_rtp_fut);
+                let fut = tokio::time::timeout(timeout_period, read_rtp_fut);
                 let message = match fut.await {
-                    Ok(Ok((packet, _))) => RtpPacketGatewayRouterMessage::RtpPacket(packet),
+                    Ok(Ok((packet, _))) => {
+                        is_timeout_send = false;
+                        RtpPacketGatewayRouterMessage::RtpPacket(packet)
+                    },
                     Ok(Err(e)) => {
                         tracing::error!("{e}");
                         let _ = receiver.terminate().await;
@@ -103,6 +111,7 @@ impl<A: Actor, R: RouterContext<A>> RtpPacketGatewayRouter<A, R> where A::Messag
                         RtpPacketGatewayRouterMessage::Timeout
                     }
                 };
+                
                 let Ok(_) = receiver.do_send(message) else { break; };
             }
         });
@@ -110,7 +119,7 @@ impl<A: Actor, R: RouterContext<A>> RtpPacketGatewayRouter<A, R> where A::Messag
     }
 }
 
-pub trait RouterContext<A: Actor>: Send + 'static {
+pub trait RouterContext<A: Actor>: Send  + Clone + 'static  {
     fn send_fir(&mut self);
     fn try_awake(&mut self);
     fn set_sleeping(&mut self);
@@ -171,3 +180,4 @@ impl<A: Actor, R: RouterContext<A>> Actor for RtpPacketGatewayRouter<A, R>
 
 pub type VideoRouter = Addr<RtpPacketGatewayRouter<VideoPacketForwarder, VideoRouterContext>>;
 pub type AudioRouter = Addr<RtpPacketGatewayRouter<AudioPacketForwarder, AudioRouterContext>>;
+pub type RouterWaker = Arc<tokio::sync::broadcast::Receiver<()>>;

@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 use tokio::sync::Notify;
 use uuid::Uuid;
 use webrtc::{ice_transport::{ice_candidate::RTCIceCandidateInit, ice_connection_state::RTCIceConnectionState}, peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription, signaling_state::RTCSignalingState}};
-use crate::{IceRestartExt, Storage, SyncChannel, actor::{Actor, Addr, Ctx, StoppingExt}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, keyframe_interceptor::KeyframeInterceptor, room::StreamQuality, rtp_packet_gateway_router::{AudioRouterContext, VideoRouterContext}, user::{ConnectionRequest, IceCandidate, MessageType, SignalMessage, Target, User, UserMessage, initiate_ice_restart}, video_layer_manager::{QualityLayer, VideoLayerManager, VideoLayerManagerMessage}, video_packet_forwarder::VideoPacketForwarder};
+use crate::{IceRestartExt, Storage, SyncChannel, actor::{Actor, Addr, Ctx, StoppingExt}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, keyframe_interceptor::KeyframeInterceptor, room::StreamQuality, rtp_packet_gateway_router::{AudioRouterContext, RouterWaker, VideoRouterContext}, user::{ConnectionRequest, IceCandidate, MessageType, SignalMessage, Target, User, UserMessage, initiate_ice_restart}, video_layer_manager::{QualityLayer, VideoLayerManager, VideoLayerManagerMessage}, video_packet_forwarder::VideoPacketForwarder};
 
 pub struct Subscriber<C: SyncChannel, S: Storage> {
     pub user: Addr<User<C, S>>,
@@ -50,7 +50,7 @@ pub enum SubscriberMessage {
         request: ConnectionRequest<VideoPacketForwarder, VideoRouterContext>, 
         quality: StreamQuality, 
         keyframe_interceptor: Addr<KeyframeInterceptor>, 
-        wake_notification: Arc<Notify>
+        wake_notification: RouterWaker
     },
     Unsubscribe { peer_id: Uuid }
 }
@@ -73,7 +73,7 @@ impl<C: SyncChannel, S: Storage> Actor for Subscriber<C, S> {
             SubscriberMessage::SwitchQualityLayer { quality } => {
                 self.current_quality = quality;
                 for subscription in self.video_subscriptions.values() {
-                    let _ = subscription.send(VideoLayerManagerMessage::SwitchQualityLayer { to: quality }).await;
+                    subscription.send(VideoLayerManagerMessage::SwitchQualityLayer { to: quality }).await.ok_or_terminate(ctx);
                 }
             }
             SubscriberMessage::Signal { offer: sdp } => {
@@ -81,38 +81,26 @@ impl<C: SyncChannel, S: Storage> Actor for Subscriber<C, S> {
                     target: TARGET,
                     message_type: MessageType::Offer { sdp }
                 };
-                let _ = self.user.send(UserMessage::SignalMessage(message)).await;
+                self.user.send(UserMessage::SignalMessage(message)).await.ok_or_terminate(ctx);
             }
             SubscriberMessage::IceCandidate { candidate } => {
                 let message = SignalMessage::Rtc {
                     target: TARGET,
                     message_type: MessageType::Candidate { candidate }
                 };
-                let _ = self.user.send(UserMessage::SignalMessage(message)).await;
+                self.user.send(UserMessage::SignalMessage(message)).await.ok_or_terminate(ctx);
             }
             SubscriberMessage::Websocket (message)=> {
-                if let Err(e) = self.handle_ws_message(message).await {
-                    tracing::error!("👤 [UserActor] UserMessage::Websocket {:?}", e);
-                    self.stop(ctx).await;
-                }
+                self.handle_ws_message(message).await.ok_or_terminate(ctx);
             },
             SubscriberMessage::ConnectAudio(request) => {
-                if let Err(e) = self.connect_audio(request).await {
-                    tracing::error!("👤 [UserActor] UserMessage::ConnectToUser {:?}", e);
-                    self.stop(ctx).await;
-                }
+                self.connect_audio(request).await.ok_or_terminate(ctx);
             },
             SubscriberMessage::ConnectVideo {quality, request, keyframe_interceptor, wake_notification} => {
-                if let Err(e) = self.connect_video(quality, request, keyframe_interceptor, wake_notification).await {
-                    tracing::error!("👤 [UserActor] UserMessage::ConnectToUser {:?}", e);
-                    self.stop(ctx).await;
-                }
+               self.connect_video(quality, request, keyframe_interceptor, wake_notification).await.ok_or_terminate(ctx);
             },
             SubscriberMessage::Unsubscribe { peer_id: from } => {
-                if let Err(e) = self.disconnect_from_user(from).await {
-                    tracing::error!("👤 [UserActor] UserMessage::DisconnectFromUser {:?}", e);
-                    self.stop(ctx).await;
-                }
+               self.disconnect_from_user(from).await.ok_or_terminate(ctx);
             }
         }
     }   
@@ -199,10 +187,10 @@ impl<C: SyncChannel, S: Storage> Subscriber<C, S> {
         quality: StreamQuality, 
         request: ConnectionRequest<VideoPacketForwarder, VideoRouterContext>, 
         keyframe_interceptor: Addr<KeyframeInterceptor>,
-        wake_notification: Arc<Notify>
+        wake_notification: RouterWaker
     ) -> Result<(), Error> {
         let peer_id = request.peer_id;
-        let layer = QualityLayer { gateway_router: request.gateway_router, keyframe_interceptor, wake_notification };
+        let layer = QualityLayer { gateway_router: request.gateway_router, keyframe_interceptor, router_waker: wake_notification };
         match self.video_subscriptions.entry(peer_id) {
             std::collections::hash_map::Entry::Occupied(o) => {
                 let addr = o.get();
@@ -237,7 +225,7 @@ impl<C: SyncChannel, S: Storage> Subscriber<C, S> {
 impl<C: SyncChannel, S: Storage> IceRestartExt for Subscriber<C, S> {
     const CHECK_ICE_STATE: Self::Message = SubscriberMessage::CheckIceState;
     const TARGET: Target = Target::Subscriber;
-    async fn on_recconnect(&self) -> Result<(), Error> {
+    async fn on_reconnect(&self) -> Result<(), Error> {
         for video_subscription in self.video_subscriptions.values() {
             video_subscription.send(VideoLayerManagerMessage::ResumeStreaming).await?;
         }
