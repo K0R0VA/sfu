@@ -5,6 +5,7 @@ export class WebrtcConnection {
                 { urls: ["stun:stun.l.google.com:19302"] },
             ] 
         }
+        this.ips = new Set();
         const subscriber_pc = new RTCPeerConnection(config);
         const publisher_pc = new RTCPeerConnection(config);
         
@@ -23,6 +24,7 @@ export class WebrtcConnection {
             room_status.value = `Участников: ${users.value.length}`;
         };
         publisher_pc.onicecandidate = (event) => {
+            if (!event.candidate) { return };
             if (event.candidate && event.candidate.candidate) {
                 this.ws.send(JSON.stringify({
                     kind: "rtc",
@@ -30,9 +32,13 @@ export class WebrtcConnection {
                     type: "candidate",
                     candidate: event.candidate.candidate,
                 }));
+                 const parts = candidateStr.split(' ');
+                    const ip = parts[4];
+                    const type = parts[7];
+
+                
             }
         };
-
         subscriber_pc.onicecandidate = (event) => {
             if (event.candidate && event.candidate.candidate) {
                 this.ws.send(JSON.stringify({
@@ -52,6 +58,7 @@ export class WebrtcConnection {
                 case 'failed':
                 case 'closed':
                 case 'disconnected': {
+                    this.disconnected = true;
                     let parameters = this.video_transceiver.sender.getParameters();
                     parameters.encodings.forEach(e => {
                         e.active = false;
@@ -60,7 +67,7 @@ export class WebrtcConnection {
                     break;
                 }
                 case 'connected': {
-                    console.log('connected');
+                    if (!this.disconnected) { return; }
                     let parameters = this.video_transceiver.sender.getParameters();
                     parameters.encodings.forEach(e => {
                         e.active = true;
@@ -68,13 +75,10 @@ export class WebrtcConnection {
                     this.video_transceiver.sender.setParameters(parameters);
                     break;
                 }
-                case 'connecting': {
-                    console.log('connecting');
-                    break;
-                }
             }
         }
     }
+    async handle_
     async add_ice_candidate(message) {
         const iceCandidate = new RTCIceCandidate({
             candidate: message.candidate,

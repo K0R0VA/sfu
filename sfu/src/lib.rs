@@ -131,18 +131,15 @@ pub trait IceRestartExt: Actor where Self::Message: From<RTCIceConnectionState> 
             RTCIceConnectionState::Failed => {
                 *self.disconnected() = true;
                 let pc = self.peer_connection();        
-                tracing::warn!("[{:?}] ice_state_change to failed", Self::TARGET, );        
                 let message = initiate_ice_restart(pc, Self::TARGET).await?;
                 self.send_target_message(message).await?;
                 *self.retry_connect_attempts() += 1;
                 addr.send(Self::CHECK_ICE_STATE).await?;
             },
             RTCIceConnectionState::Disconnected => {
-                tracing::info!("[{:?}] Disconnected", Self::TARGET);
                 *self.disconnected() = true;
             }
             RTCIceConnectionState::Connected if *self.disconnected() => {
-                tracing::warn!("[{:?}] succesfully reconnected", Self::TARGET);    
                 self.on_reconnect().await?;    
                 *self.disconnected() = false;
                 *self.retry_connect_attempts() = 0;

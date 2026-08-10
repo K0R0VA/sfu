@@ -132,6 +132,7 @@ impl Actor for VideoPacketForwarder {
     async fn handle(&mut self, ctx: &mut crate::actor::Ctx<'_, Self>, msg: Self::Message) {
         match msg {
             VideoPacketForwarderMessage::Reset => {
+                if self.is_layer_switching { return; }
                 if let Some(current_channel) = &self.current_channel {
                     current_channel.do_send(RtpPacketGatewayRouterMessage::Unsubscribe(ctx.addr.clone())).ok_or_terminate(ctx);
                     current_channel.do_send(RtpPacketGatewayRouterMessage::Subscribe(ctx.addr.clone())).ok_or_terminate(ctx);
