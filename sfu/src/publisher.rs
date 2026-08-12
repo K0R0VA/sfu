@@ -1,15 +1,15 @@
 use std::{str::FromStr, sync::Arc};
 use uuid::Uuid;
 use webrtc::{ice_transport::{ice_candidate::RTCIceCandidateInit, ice_connection_state::RTCIceConnectionState}, peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription}, rtp_transceiver::rtp_codec::RTPCodecType};
-use crate::{IceRestartExt, Storage, SyncChannel, actor::{Actor, Addr, Ctx, StoppingExt, WeakAddr}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, keyframe_interceptor::{KeyframeInterceptor, RequestKeyframe}, quality_monitor::{DeviceType, QualityMonitor, QualityThresholds}, room::{AudioRouterStream, Codec, Room, RoomMessage, StreamQuality, VideoRouterStream}, rtp_packet_gateway_router::{AudioRouter, AudioRouterContext, RouterContext, RtpPacketGatewayRouter, RtpPacketMessage, VideoRouter, VideoRouterContext}, user::{IceCandidate, MessageType, SignalMessage, Target, User, UserMessage, initiate_ice_restart}, video_packet_forwarder::VideoPacketForwarder};
+use crate::{IceRestartExt, Storage, SignalingClient, actor::{Actor, Addr, Ctx, StoppingExt}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, keyframe_interceptor::{KeyframeInterceptor, RequestKeyframe}, quality_monitor::{DeviceType, QualityMonitor, QualityThresholds}, room::{AudioRouterStream, Codec, Room, RoomMessage, StreamQuality, VideoRouterStream}, rtp_packet_gateway_router::{AudioRouterContext, RtpPacketGatewayRouter, VideoRouterContext}, user::{IceCandidate, MessageType, SignalMessage, Target, User, UserMessage}, video_packet_forwarder::VideoPacketForwarder};
 
-pub struct Publisher<C: SyncChannel, S: Storage> {
+pub struct Publisher<C: SignalingClient, S: Storage> {
     pub peer_id: Uuid,
     pub pc: Arc<RTCPeerConnection>,
     pub user: Addr<User<C, S>>,
     pub room: Addr<Room<C, S>>,    
     pub video_track_keyframe_interceptors: Vec<Addr<KeyframeInterceptor>>,
-    pub qualify_monitor: WeakAddr<QualityMonitor<C, S>>,
+    pub quality_monitor: Addr<QualityMonitor<C, S>>,
     pub ice_candidate_send: bool,
     pub disconnected: bool,
     pub retry_connect_attempts: u8,
@@ -18,16 +18,23 @@ pub struct Publisher<C: SyncChannel, S: Storage> {
 
 const TARGET: Target = Target::Publisher;
 
-impl<C: SyncChannel, S: Storage> Publisher<C, S> {
-    pub async fn new(user: Addr<User<C, S>>, room: Addr<Room<C, S>>, peer_id: Uuid) -> Result<Self, Error> {
+impl<C: SignalingClient, S: Storage> Publisher<C, S> {
+    pub async fn new(user: Addr<User<C, S>>, room: Addr<Room<C, S>>, peer_id: Uuid, device_type: DeviceType) -> Result<Self, Error> {
         let peer = create_peer().await?;
         let pc = Arc::new(peer);
+        let quality_monitor = QualityMonitor::new(
+            pc.clone(), 
+           user.clone(), 
+            QualityThresholds::from(device_type)
+        )
+            .await?
+            .start();
         Ok(Self {
             pc,
             user,
             room,
             peer_id,
-            qualify_monitor: WeakAddr::default(),
+            quality_monitor,
             disconnected: false,
             retry_connect_attempts: 0,
             ice_candidate_send: false,
@@ -35,7 +42,7 @@ impl<C: SyncChannel, S: Storage> Publisher<C, S> {
         })
     }
     pub async fn try_stop(self) -> Result<(), Error> {
-        self.qualify_monitor.try_terminate().await?;
+        self.quality_monitor.terminate().await?;
         self.pc.close().await?;
         Ok(())
     }
@@ -50,7 +57,6 @@ pub enum PublisherMessage {
     IceCandidate { 
         candidate: IceCandidate,
     },
-    InitiateMonitoring { device_type: DeviceType },
     NewAudioTrack(AudioRouterStream),
     NewVideoTrack{ quality: StreamQuality, video_router_stream: VideoRouterStream },
 }
@@ -61,7 +67,7 @@ impl From<RTCIceConnectionState> for PublisherMessage {
     }
 }
 
-impl<C: SyncChannel, S: Storage> Actor for Publisher<C, S> {
+impl<C: SignalingClient, S: Storage> Actor for Publisher<C, S> {
     type Message = PublisherMessage;
     async fn handle(&mut self, ctx: &mut Ctx<'_, Self>, msg: Self::Message) {
         match msg {
@@ -101,9 +107,6 @@ impl<C: SyncChannel, S: Storage> Actor for Publisher<C, S> {
                 self.user.send(UserMessage::SignalMessage(message)).await.ok_or_terminate(ctx);
                 self.ice_candidate_send = true;
             },
-            PublisherMessage::InitiateMonitoring { device_type } => {
-                self.initiate_monitoring(device_type).await.ok_or_terminate(ctx);
-            }
         }
     }   
     async fn starting(&mut self, ctx: &Ctx<'_, Self>) {
@@ -172,20 +175,20 @@ impl<C: SyncChannel, S: Storage> Actor for Publisher<C, S> {
     }
 }
 
-impl<C: SyncChannel, S: Storage> Publisher<C, S> {
-    async fn initiate_monitoring(&mut self, device_type: DeviceType) -> Result<(), Error> {
-        let quality_monitor = QualityMonitor::new(
-            self.pc.clone(), 
-            self.user.clone(), 
-            QualityThresholds::from(device_type)
-        )
-            .await?
-            .start();
-        self.qualify_monitor.set_addr(quality_monitor);
-        Ok(())
-    }
+impl<C: SignalingClient, S: Storage> Publisher<C, S> {
     async fn handle_ws_message(&mut self, message: MessageType) -> Result<(), Error> {
         match message {
+            MessageType::IceRestart { sdp } => {
+                let offer_desc = RTCSessionDescription::offer(sdp)?;
+                self.pc.set_remote_description(offer_desc).await?;
+                let answer = self.pc.create_answer(None).await?;
+                self.pc.set_local_description(answer.clone()).await?;
+                let message = SignalMessage::Rtc {
+                    target: Target::Publisher,
+                    message_type: MessageType::Answer {sdp: answer.sdp }
+                };
+                self.user.send(UserMessage::SignalMessage(message)).await?;
+            },
             MessageType::Offer {sdp} => {
                 let offer_desc = RTCSessionDescription::offer(sdp)?;
                 self.pc.set_remote_description(offer_desc).await?;
@@ -195,8 +198,8 @@ impl<C: SyncChannel, S: Storage> Publisher<C, S> {
                     target: Target::Publisher,
                     message_type: MessageType::Answer {sdp: answer.sdp }
                 };
-                let _ = self.user.send(UserMessage::SignalMessage(message)).await;
-                let _ = self.room.send(RoomMessage::SubscribeToPeers { peer_id: self.peer_id }).await;
+                self.user.send(UserMessage::SignalMessage(message)).await?;
+                self.room.send(RoomMessage::SubscribeToPeers { peer_id: self.peer_id }).await?;
             },
             MessageType::Candidate { candidate } => {
                 let IceCandidate { candidate, sdp_mid, sdp_mline_index } = candidate;
@@ -212,13 +215,12 @@ impl<C: SyncChannel, S: Storage> Publisher<C, S> {
                 let answer_desc = RTCSessionDescription::answer(sdp)?;
                 self.pc.set_remote_description(answer_desc).await?;
             },
-            _ => {}
         }
         Ok(())
     }
 }
 
-impl<C: SyncChannel, S: Storage> IceRestartExt for Publisher<C, S> {
+impl<C: SignalingClient, S: Storage> IceRestartExt for Publisher<C, S> {
     const CHECK_ICE_STATE: Self::Message = PublisherMessage::CheckIceState;
     const TARGET: Target = Target::Publisher;
     async fn on_reconnect(&self) -> Result<(), Error> {

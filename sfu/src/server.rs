@@ -2,9 +2,9 @@ use std::{collections::HashMap};
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::{Storage, SyncChannel, actor::{Actor, Addr, Ctx}, error::Error, room::{Room, RoomMessage}, user::User};
+use crate::{Storage, SignalingClient, actor::{Actor, Addr, Ctx}, error::Error, room::Room};
 
-pub struct Server<C: SyncChannel, S: Storage> {
+pub struct Server<C: SignalingClient, S: Storage> {
     rooms: HashMap<Uuid, (String, Addr<Room<C, S>>)>
 }
 
@@ -14,7 +14,7 @@ pub struct RoomResponse {
     name: String
 }
 
-impl<C: SyncChannel, S: Storage> Addr<Server<C, S>> {
+impl<C: SignalingClient, S: Storage> Addr<Server<C, S>> {
     pub async fn create_room(&self, name: String) -> Result<(Uuid, Addr<Room<C, S>>), Error> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let _ = self.send(ServerMessage::CreateRoom { name, response_channel: tx }).await;
@@ -34,7 +34,7 @@ impl<C: SyncChannel, S: Storage> Addr<Server<C, S>> {
     }
 }
 
-impl<C: SyncChannel, S: Storage> Default for Server<C, S> {
+impl<C: SignalingClient, S: Storage> Default for Server<C, S> {
     fn default() -> Self {
         Self {
             rooms: HashMap::new()
@@ -44,16 +44,15 @@ impl<C: SyncChannel, S: Storage> Default for Server<C, S> {
 
 
 
-pub enum ServerMessage<C: SyncChannel, S: Storage> {
+pub enum ServerMessage<C: SignalingClient, S: Storage> {
     CreateRoom { name: String, response_channel: tokio::sync::oneshot::Sender<(Uuid, Addr<Room<C, S>>)> },
     DeleteRoom { room_id: Uuid },
     GetRoomAddr { room_id: Uuid, response_channel: tokio::sync::oneshot::Sender<Option<(String, Addr<Room<C, S>>)>> },
     GetRooms { response_channel: tokio::sync::oneshot::Sender<Vec<RoomResponse>> },
-    JoinRoom { room_id: Uuid, user_id: Uuid, addr: Addr<User<C, S>> },
 }
 
 
-impl<C: SyncChannel, S: Storage> Actor for Server<C, S> {
+impl<C: SignalingClient, S: Storage> Actor for Server<C, S> {
     type Message = ServerMessage<C, S>;
     async fn handle(&mut self, _ctx: &mut Ctx<'_, Self>, msg: Self::Message) {
         match msg {
@@ -76,11 +75,6 @@ impl<C: SyncChannel, S: Storage> Actor for Server<C, S> {
             ServerMessage::GetRooms { response_channel } => {
                 let rooms = self.rooms.iter().map(|(id, (name, _))| RoomResponse { id: *id, name: name.clone() }).collect();
                 let _ = response_channel.send(rooms);
-            }
-            ServerMessage::JoinRoom { room_id, user_id, addr } => {
-                if let Some((_, room)) = self.rooms.get(&room_id) {
-                    let _ = room.send(RoomMessage::Join { peer_id: user_id, addr }).await;
-                }
             }
         }
     }   

@@ -1,20 +1,16 @@
-import { WebrtcConnection, getDeviceType } from "./webrtc";
+import { SmartWebSocket } from "./smart_websocket";
+import { WebrtcConnection } from "./webrtc";
 
 export class UserWebsocket {
     constructor(users, room_id, room_status, room_name) {
-        console.log('connect webscocket');
         this.ws = createWebSocket(room_id.value);
-        this.peer_connection = new WebrtcConnection(users, room_status, this.ws);
+        this.webrtc_connection = new WebrtcConnection(users, this.ws);
         this.room_status = room_status;
         this.room_name = room_name;
         this.users = users;
     }
     init() {
-        this.ws.onopen = () => {
-            console.log(`🟢 WebSocket соединен`);
-            this.room_status.value = "Соединение установлено";
-        };
-        this.ws.onmessage = async (event) => {
+        this.ws.on_message(async (event) => {
             const message = JSON.parse(event.data);
             switch (message.kind) {
                 case 'room_info': {
@@ -23,6 +19,7 @@ export class UserWebsocket {
                 }
                 case 'welcome': {
                     this.peer_id = message.peer_id;
+                    this.ws.url = `${this.ws.url}&user_id=${this.peer_id}`;
                     this.room_status.value = "Получение медиапотока...";
                     const video_stream = await this.getMedia({ 
                         video: {
@@ -41,12 +38,7 @@ export class UserWebsocket {
                             channelCount: { ideal: 1 }     // Моно (достаточно для голоса)
                         }
                     });
-                    await this.peer_connection.add_tracks(video_stream, audio_stream);
-                    const device_type = getDeviceType();
-                    this.ws.send(JSON.stringify({
-                        kind: "connect",
-                        device_type
-                    }));
+                    await this.webrtc_connection.publisher.add_tracks(video_stream, audio_stream);
                     if (!!video_stream) {
                         this.users.value.set(this.peer_id, {
                             stream: video_stream,
@@ -59,20 +51,15 @@ export class UserWebsocket {
                 case 'rtc': {
                     switch (message.type) {
                         case 'candidate': {
-                            await this.peer_connection.add_ice_candidate(message);
+                            await this.webrtc_connection.add_ice_candidate(message);
                             break;
                         }
                         case 'offer': {
-                            await this.peer_connection.create_answer(message.sdp);
-                            break;
-                        }
-                        case 'ice_restart': {
-                            console.log('ice_restart');
-                            await this.peer_connection.restart_ice(message);
+                            await this.webrtc_connection.subscriber.create_answer(message.sdp);
                             break;
                         }
                         case 'answer': {
-                            await this.peer_connection.receive_answer({type: message.type, sdp: message.sdp});
+                            await this.webrtc_connection.receive_answer(message);
                             break;
                         }
                     }
@@ -84,15 +71,7 @@ export class UserWebsocket {
                     break;
                 }
             }
-        };
-        const RECONNECTABLE_CODES = [1001, 1005, 1006, 1011, 1012, 1013];
-        this.ws.onclose = (e) => {
-            if (RECONNECTABLE_CODES.includes(e.code)) {
-                // todo add reconnect;
-            }
-            console.log("🔴 Соединение закрыто");
-            this.room_status.value = "Соединение потеряно";
-        };
+        });
     }
     async getMedia(request) {
         let video_stream;
@@ -108,9 +87,9 @@ export class UserWebsocket {
     }
     disconnect() {
         try {
-            this.ws.close();
-            this.peer_connection.publisher_pc.close();
-            this.peer_connection.subscriber_pc.close();
+            this.ws.ws.close();
+            this.webrtc_connection.publisher.pc.close();
+            this.webrtc_connection.subscriber.pc.close();
         }
         catch (e) {
             console.log(e);
@@ -125,9 +104,21 @@ export class UserWebsocket {
 
 function createWebSocket (room_id) {
     const hostname = window.location.hostname;
+    const device_type = getDeviceType();
     if (hostname === 'localhost') {
-        return new WebSocket(`ws://${hostname}:8080/api/room/${room_id}`);
+        return new SmartWebSocket(`ws://${hostname}:8080/api/room/${room_id}?device=${device_type}`);
     } else {
-        return new WebSocket(`wss://${hostname}/api/room/${room_id}`);
+        return new SmartWebSocket(`wss://${hostname}/api/room/${room_id}?device=${device_type}`);
     }
 };
+
+export function getDeviceType() {
+    const ua = navigator.userAgent;
+    // if (/(tablet|ipad|playbook|silk)|(android(?!.*mobi))/i.test(ua)) {
+    //     return 'tablet';
+    // }
+    if (/Mobile|Android|iP(hone|od)|IEMobile|BlackBerry|Kindle|Silk-Accelerated|(hpw|web)OS|Opera M(obi|ini)/.test(ua)) {
+        return 'mobile';
+    }
+    return 'desktop';
+}

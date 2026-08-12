@@ -1,10 +1,9 @@
 use std::{collections::HashMap, sync::Arc};
-use tokio::sync::Notify;
 use uuid::Uuid;
 use webrtc::{ice_transport::{ice_candidate::RTCIceCandidateInit, ice_connection_state::RTCIceConnectionState}, peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription, signaling_state::RTCSignalingState}};
-use crate::{IceRestartExt, Storage, SyncChannel, actor::{Actor, Addr, Ctx, StoppingExt}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, keyframe_interceptor::KeyframeInterceptor, room::StreamQuality, rtp_packet_gateway_router::{AudioRouterContext, RouterWaker, VideoRouterContext}, user::{ConnectionRequest, IceCandidate, MessageType, SignalMessage, Target, User, UserMessage, initiate_ice_restart}, video_layer_manager::{QualityLayer, VideoLayerManager, VideoLayerManagerMessage}, video_packet_forwarder::VideoPacketForwarder};
+use crate::{IceRestartExt, Storage, SignalingClient, actor::{Actor, Addr, Ctx, StoppingExt}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, keyframe_interceptor::KeyframeInterceptor, room::StreamQuality, rtp_packet_gateway_router::{AudioRouterContext, RouterWaker, VideoRouterContext}, user::{ConnectionRequest, IceCandidate, MessageType, SignalMessage, Target, User, UserMessage}, video_layer_manager::{QualityLayer, VideoLayerManager, VideoLayerManagerMessage}, video_packet_forwarder::VideoPacketForwarder};
 
-pub struct Subscriber<C: SyncChannel, S: Storage> {
+pub struct Subscriber<C: SignalingClient, S: Storage> {
     pub user: Addr<User<C, S>>,
     pub pc: Arc<RTCPeerConnection>,
     pub audio_subscriptions: HashMap<Uuid, Addr<AudioPacketForwarder>>,
@@ -16,7 +15,7 @@ pub struct Subscriber<C: SyncChannel, S: Storage> {
 
 const TARGET: Target = Target::Subscriber;
 
-impl<C: SyncChannel, S: Storage> Subscriber<C, S> {
+impl<C: SignalingClient, S: Storage> Subscriber<C, S> {
     pub async fn new(user: Addr<User<C, S>>) -> Result<Self, Error> {
         let pc = create_peer().await?;
         let pc = Arc::new(pc);
@@ -61,7 +60,7 @@ impl From<RTCIceConnectionState> for SubscriberMessage {
     }
 }
 
-impl<C: SyncChannel, S: Storage> Actor for Subscriber<C, S> {
+impl<C: SignalingClient, S: Storage> Actor for Subscriber<C, S> {
     type Message = SubscriberMessage;
     async fn handle(&mut self, ctx: &mut Ctx<'_, Self>, msg: Self::Message) {
         match msg {
@@ -153,9 +152,20 @@ impl<C: SyncChannel, S: Storage> Actor for Subscriber<C, S> {
     }
 }
 
-impl<C: SyncChannel, S: Storage> Subscriber<C, S> {
+impl<C: SignalingClient, S: Storage> Subscriber<C, S> {
     async fn handle_ws_message(&mut self, message: MessageType) -> Result<(), Error> {
         match message {
+            MessageType::IceRestart {sdp} => {
+                let offer_desc = RTCSessionDescription::offer(sdp)?;
+                self.pc.set_remote_description(offer_desc).await?;
+                let answer = self.pc.create_answer(None).await?;
+                self.pc.set_local_description(answer.clone()).await?;
+                let message = SignalMessage::Rtc {
+                    target: Target::Subscriber,
+                    message_type: MessageType::Answer {sdp: answer.sdp }
+                };
+                let _ = self.user.send(UserMessage::SignalMessage(message)).await;
+            },
             MessageType::Answer { sdp } => {
                 let answer_desc = RTCSessionDescription::answer(sdp)?;
                 self.pc.set_remote_description(answer_desc).await?;
@@ -222,7 +232,7 @@ impl<C: SyncChannel, S: Storage> Subscriber<C, S> {
     }
 }
 
-impl<C: SyncChannel, S: Storage> IceRestartExt for Subscriber<C, S> {
+impl<C: SignalingClient, S: Storage> IceRestartExt for Subscriber<C, S> {
     const CHECK_ICE_STATE: Self::Message = SubscriberMessage::CheckIceState;
     const TARGET: Target = Target::Subscriber;
     async fn on_reconnect(&self) -> Result<(), Error> {

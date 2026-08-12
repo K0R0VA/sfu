@@ -37,10 +37,6 @@ impl RtpPacketCache {
         let index = packet.header.sequence_number as usize;
         self.inner[index] = Some(packet);
     }
-    fn reset(&mut self) {
-        let cache = vec![None; u16::MAX as usize + 1];
-        self.inner = cache.into_boxed_slice().try_into().unwrap();
-    }
 }
 
 impl VideoPacketForwarder {

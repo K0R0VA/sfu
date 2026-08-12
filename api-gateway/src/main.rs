@@ -1,7 +1,7 @@
-use axum::{Json, extract::{Path, ws::Message}, response::{ Response}, routing::post};
+use axum::{Json, extract::{Path, Query, ws::Message}, response::Response, routing::post};
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use serde::{Deserialize, Serialize};
-use sfu::{Storage, StorageConfiguration, SyncChannel, actor::{self, Actor, Addr}, server::{Server, ServerMessage}, user::{SignalMessage, SyncMessage, User, UserMessage::{self}}};
+use sfu::{Storage, StorageConfiguration, SignalingClient, actor::{Actor, Addr}, room::RoomMessage, server::{Server, ServerMessage}, user::{SessionParams, SignalMessage, SyncMessage, User, UserMessage::{self}}};
 use tokio::{fs::File, io::AsyncWriteExt};
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -33,18 +33,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("🚀 Единый SFU Сервер запущен на http://localhost:8080");
     axum::serve(listener, app).await?;
     Ok(())
-}
+}                                                          
+
 
 async fn ws_handler(
     room_id: Path<Uuid>,
+    session_params: Query<SessionParams>,
     ws: WebSocketUpgrade,
     State(server): State<Addr<Server<WebsocketSyncChannel, FileStorage>>>,
 ) -> Response {
     let room_id = room_id.0;
     ws.on_upgrade(move |socket| async move {
-        if let Err(e) = try_connect_websocket(room_id, socket, server).await {
-            tracing::error!("websocket failed {e}");
-        }
+        try_connect_websocket(room_id, session_params.0, socket, server).await.unwrap()
     })
 }
 
@@ -85,40 +85,50 @@ async fn create_room(
 
 async fn try_connect_websocket(
     room_id: Uuid,
+    session_params: SessionParams,
     ws: WebSocket,
     server: Addr<Server<WebsocketSyncChannel, FileStorage>>
-) -> Result<(), sfu::error::Error> {
-    let (ws_tx, ws_rx) = ws.split();
-    let mut sync_channel = WebsocketSyncChannel {socket: ws_tx};
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (ws_tx, mut ws_rx) = ws.split();
+    let mut signaling_client = WebsocketSyncChannel {socket: ws_tx};
     let (tx, rx) = tokio::sync::oneshot::channel();
     server.send(ServerMessage::GetRoomAddr { room_id, response_channel: tx }).await?;
     let (room_name, room) = match rx.await? {
         Some(room) => room,
         None => {
-            sync_channel.send("Room not found".into()).await.unwrap();
+            signaling_client.send("Room not found".into()).await?;
             return Ok(());
         }
     };
     let message = serde_json::to_string(&SignalMessage::RoomInfo { name: room_name })?;
-    sync_channel.send(message).await.unwrap();
-    let user = User::new(sync_channel, room.clone()).await?;
-    let user_id = user.peer_id;
-    let addr = user.start();
-    addr.add_stream(ws_rx, |msg| {
-        let message = match msg {
+    signaling_client.send(message).await?;
+    let user_id = Uuid::new_v4();
+    let addr = match session_params.user_id {
+        None => User::new(user_id, signaling_client, session_params, room.clone()).await?.start(),
+        Some(existed_id) => {
+            let (rx, tx) = tokio::sync::oneshot::channel();
+            room.send(RoomMessage::GetUser { peer_id: existed_id, response_channel: rx }).await?;
+            match tx.await? {
+                Some(user) => {
+                    user.send(UserMessage::Reconnect(signaling_client)).await?;
+                    user
+                },
+                None => User::new(existed_id, signaling_client, session_params, room.clone()).await?.start(),
+            }
+        }
+    };
+    while let Some(r) = ws_rx.next().await {
+        let message = match r {
             Ok(Message::Text(text)) => {
-                match serde_json::from_slice(text.as_bytes()) {
-                    Ok(msg) => SyncMessage::Message(msg),
-                    Err(e) => SyncMessage::Error(e.to_string()) 
-                }
-            },
-            Ok(Message::Close(_) ) => return actor::StreamItem::Next(UserMessage::SyncMessage(SyncMessage::Close)) ,
+                let message = serde_json::from_str(&text)?;
+                SyncMessage::Message(message)
+            }
             Err(e) => SyncMessage::Error(e.to_string()),
-            _ => return actor::StreamItem::Skip
+            Ok(Message::Close(_)) => SyncMessage::Close,
+            _ => continue
         };
-        actor::StreamItem::Next(UserMessage::SyncMessage(message)) 
-    });
-    server.send(ServerMessage::JoinRoom { room_id, user_id, addr }).await?;
+        addr.send(UserMessage::SyncMessage(message)).await?;
+    }
     Ok(())
 }
 
@@ -126,7 +136,7 @@ pub struct WebsocketSyncChannel {
     socket: SplitSink<WebSocket, Message>
 }
 
-impl SyncChannel for WebsocketSyncChannel {
+impl SignalingClient for WebsocketSyncChannel {
     type Item = String;
     type Error = axum::Error;
     async fn send(&mut self, message: String) -> Result<(), Self::Error> {

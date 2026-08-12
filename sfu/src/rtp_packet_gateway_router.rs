@@ -1,6 +1,5 @@
 use std::{collections::HashSet, sync::Arc, time::{Duration, Instant}};
-use tokio::{time::timeout};
-use webrtc::{peer_connection::RTCPeerConnection, rtcp::payload_feedbacks::{full_intra_request::{FirEntry, FullIntraRequest}, picture_loss_indication::PictureLossIndication}, rtp::packet::Packet, track::track_remote::TrackRemote};
+use webrtc::{peer_connection::RTCPeerConnection, rtcp::payload_feedbacks::{full_intra_request::{FirEntry, FullIntraRequest}}, rtp::packet::Packet, track::track_remote::TrackRemote};
 use crate::{actor::{Actor, Addr, StoppingExt}, audio_packet_forwarder::AudioPacketForwarder, error::Error, room::StreamQuality, video_packet_forwarder::VideoPacketForwarder,};
 
 pub struct RtpPacketGatewayRouter<A: Actor, T> {
@@ -100,6 +99,11 @@ impl<A: Actor, R: RouterContext<A>> RtpPacketGatewayRouter<A, R> where A::Messag
                         is_timeout_send = false;
                         RtpPacketGatewayRouterMessage::RtpPacket(packet)
                     },
+                    Ok(Err(webrtc::Error::ErrClosedPipe)) | 
+                    Ok(Err(webrtc::Error::Data(webrtc::data::Error::Util(webrtc::util::Error::ErrBufferClosed)))) => {
+                        let _ = receiver.terminate().await;
+                        break;
+                    },
                     Ok(Err(e)) => {
                         tracing::error!("{e}");
                         let _ = receiver.terminate().await;
@@ -111,7 +115,6 @@ impl<A: Actor, R: RouterContext<A>> RtpPacketGatewayRouter<A, R> where A::Messag
                         RtpPacketGatewayRouterMessage::Timeout
                     }
                 };
-                
                 let Ok(_) = receiver.do_send(message) else { break; };
             }
         });
@@ -173,9 +176,7 @@ impl<A: Actor, R: RouterContext<A>> Actor for RtpPacketGatewayRouter<A, R>
             }
         }
     }
-    async fn stopping(self, _ctx: &crate::actor::Ctx<'_, Self>) {
-        tracing::info!("[RtpPacketGatewayRouter] Stopping");
-    }
+    async fn stopping(self, _ctx: &crate::actor::Ctx<'_, Self>) {}
 }
 
 pub type VideoRouter = Addr<RtpPacketGatewayRouter<VideoPacketForwarder, VideoRouterContext>>;

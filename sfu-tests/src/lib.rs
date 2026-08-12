@@ -1,6 +1,6 @@
 use std::{collections::HashSet, fs::File, io::BufReader, str::FromStr, sync::{Arc}, time::Duration};
 
-use sfu::{Storage, StorageConfiguration, SyncChannel, create_peer, error::Error, user::{IceCandidate, SignalMessage, Target}};
+use sfu::{Storage, StorageConfiguration, SignalingClient, create_peer, error::Error, user::{IceCandidate, SignalMessage, Target}};
 use tokio::{io::AsyncWriteExt, sync::Mutex};
 use uuid::Uuid;
 use webrtc::{ice_transport::ice_candidate::RTCIceCandidateInit, media::{Sample, io::ivf_reader::{ IVFReader}}, peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription}, rtp_transceiver::{RTCRtpTransceiverInit, rtp_codec::RTCRtpCodecCapability, rtp_transceiver_direction::RTCRtpTransceiverDirection}, track::track_local::track_local_static_sample::TrackLocalStaticSample
@@ -103,7 +103,6 @@ impl TestClient {
         self.peer_id = Some(peer_id);
         self.add_track().await?;
         self.markers.send_offer = true;
-        self.sfu_tx.send(SignalMessage::Connect { device_type: sfu::quality_monitor::DeviceType::Desktop }).await.unwrap();
         Ok(())
     }
     async fn handle_offer(&self, sdp: String) -> Result<(), Error> {
@@ -255,7 +254,7 @@ pub struct TestSyncChannel {
     channel: tokio::sync::mpsc::Sender<SignalMessage>                               
 }
 
-impl SyncChannel for TestSyncChannel {
+impl SignalingClient for TestSyncChannel {
     type Item = SignalMessage;
     type Error = tokio::sync::mpsc::error::SendError<SignalMessage>;
     async fn send(&mut self, message: SignalMessage) -> Result<(), Self::Error> {

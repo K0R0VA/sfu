@@ -1,6 +1,6 @@
 use std::{sync::{Arc, atomic::{AtomicU8, Ordering::Relaxed}}};
 
-use sfu::{actor::{Actor, StreamItem::Next}, error::Error, room::{RoomMessage}, server::{Server, ServerMessage}, user::User};
+use sfu::{actor::{Actor, StreamItem::Next}, error::Error, room::RoomMessage, server::{Server, ServerMessage}, user::{SessionParams, User}};
 
 use crate::{FileStorage, spawn_test_client};
 
@@ -14,8 +14,8 @@ async fn connect_one_user_to_room() -> Result<(), Error> {
     let _ = server.send(ServerMessage::CreateRoom { name: "".to_string(), response_channel: tx }).await;
     let (_, room) = rx.await.unwrap();
     let (channel, mut client, stream) = spawn_test_client().await?;
-    let user = User::new(channel, room.clone()).await?;
-    let user_id = user.peer_id;
+    let user = User::new(channel, SessionParams { device: sfu::quality_monitor::DeviceType::Desktop }, room.clone()).await?;
+    let user_id = user.id;
     let addr = user.start();
     addr.add_stream(tokio_stream::wrappers::ReceiverStream::new(stream), 
     |m| Next(sfu::user::UserMessage::SyncMessage(sfu::user::SyncMessage::Message(m))));
@@ -41,8 +41,8 @@ async fn connect_two_users_to_room() -> Result<(), Error> {
     let counter = Arc::new(AtomicU8::default());
     let task_1 = {
         let (channel, mut client, stream) = spawn_test_client().await?;
-        let user = User::new(channel, room.clone()).await?;
-        let peer_id = user.peer_id;
+        let user = User::new(channel, SessionParams { device: sfu::quality_monitor::DeviceType::Desktop }, room.clone()).await?;
+        let peer_id = user.id;
         let user = user.start();
         user.add_stream(tokio_stream::wrappers::ReceiverStream::new(stream), 
         |m| Next(sfu::user::UserMessage::SyncMessage(sfu::user::SyncMessage::Message(m))));
@@ -66,8 +66,8 @@ async fn connect_two_users_to_room() -> Result<(), Error> {
     };
     let task_2 = {
         let (channel, mut client, stream) = spawn_test_client().await?;
-        let user = User::new(channel, room.clone()).await?;
-        let peer_id = user.peer_id;
+        let user = User::new(channel, SessionParams { device: sfu::quality_monitor::DeviceType::Desktop }, room.clone()).await?;
+        let peer_id = user.id;
         let user = user.start();
         user.add_stream(tokio_stream::wrappers::ReceiverStream::new(stream), 
         |m| Next(sfu::user::UserMessage::SyncMessage(sfu::user::SyncMessage::Message(m))));
@@ -107,8 +107,8 @@ async fn connect_many_users_to_room() -> Result<(), Error> {
     let barrier = Arc::new(tokio::sync::Barrier::new(24));
     for _ in 0 .. 24 {
         let (channel, mut client, stream) = spawn_test_client().await?;
-        let user = User::new(channel, room.clone()).await?;
-        let peer_id = user.peer_id;
+        let user = User::new(channel, SessionParams { device: sfu::quality_monitor::DeviceType::Desktop }, room.clone()).await?;
+        let peer_id = user.id;
         let user = user.start();
         user.add_stream(tokio_stream::wrappers::ReceiverStream::new(stream), 
         |m| Next(sfu::user::UserMessage::SyncMessage(sfu::user::SyncMessage::Message(m))));

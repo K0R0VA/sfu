@@ -1,34 +1,39 @@
-use std::sync::Arc;
-
 use serde::{Deserialize, Serialize};
-use tokio::sync::Notify;
 use uuid::Uuid;
 use webrtc::{peer_connection::{RTCPeerConnection, offer_answer_options::RTCOfferOptions, },  };
-use crate::{Storage, SyncChannel, actor::{Actor, Addr, Ctx, StoppingExt, WeakAddr}, audio_packet_forwarder::AudioPacketForwarder, error::Error, keyframe_interceptor::KeyframeInterceptor, publisher::{Publisher, PublisherMessage}, quality_monitor::DeviceType, room::{Codec, Room, RoomMessage, StreamQuality}, rtp_packet_gateway_router::{AudioRouterContext, RouterContext, RouterWaker, RtpPacketGatewayRouter, RtpPacketMessage, VideoRouterContext}, subscriber::{Subscriber, SubscriberMessage}, video_packet_forwarder::VideoPacketForwarder};
+use crate::{Storage, SignalingClient, actor::{Actor, Addr, Ctx, StoppingExt, WeakAddr}, audio_packet_forwarder::AudioPacketForwarder, error::Error, keyframe_interceptor::KeyframeInterceptor, publisher::{Publisher, PublisherMessage}, quality_monitor::DeviceType, room::{Codec, Room, RoomMessage, StreamQuality}, rtp_packet_gateway_router::{AudioRouterContext, RouterContext, RouterWaker, RtpPacketGatewayRouter, RtpPacketMessage, VideoRouterContext}, subscriber::{Subscriber, SubscriberMessage}, video_packet_forwarder::VideoPacketForwarder};
 
-pub struct User<C: SyncChannel, S: Storage> {
+
+pub struct User<C: SignalingClient, S: Storage> {
     pub room: Addr<Room<C, S>>,
-    pub peer_id: Uuid,
+    pub id: Uuid,
+    pub session_params: SessionParams,
     // pub sync_channel: 
-    pub sync_channel: C, // 
+    pub signaling_client: C, // 
     pub publisher: WeakAddr<Publisher<C, S>>,
     pub subscriber: WeakAddr<Subscriber<C, S>>,
 }
 
-impl<C: SyncChannel, S: Storage> User<C, S> {
-    pub async fn new(sync_channel: C, room: Addr<Room<C, S>>) -> Result<Self, Error> {
-        let peer_id = Uuid::new_v4();
+impl<C: SignalingClient, S: Storage> User<C, S> {
+    pub async fn new(user_id: Uuid, signaling_client: C, session_params: SessionParams, room: Addr<Room<C, S>>) -> Result<Self, Error> {
         Ok(Self {
-            peer_id,
+            id: user_id,
+            session_params,
             room,
-            sync_channel,
+            signaling_client,
             publisher: WeakAddr::default(),
             subscriber: WeakAddr::default(),
         })
     }
 }
+#[derive(Deserialize)]
+pub struct SessionParams {
+    pub device: DeviceType,
+    pub user_id: Option<Uuid>,
+}
 
-pub enum UserMessage {
+pub enum UserMessage<C: SignalingClient> {
+    Reconnect(C),
     SignalMessage(SignalMessage),
     SwitchQualityLayer { quality: StreamQuality },
     SyncMessage(SyncMessage),
@@ -63,19 +68,22 @@ pub enum ConnectionRequestKind {
     Video { stream_quality: StreamQuality }
 }
 
-impl<C: SyncChannel, S: Storage> Actor for User<C, S> {
-    type Message = UserMessage;
+impl<C: SignalingClient, S: Storage> Actor for User<C, S> {
+    type Message = UserMessage<C>;
     async fn handle(&mut self, ctx: &mut Ctx<'_, Self>, msg: Self::Message) {
         match msg {
+            UserMessage::Reconnect(c) => {
+                self.signaling_client = c;
+            }
             UserMessage::SignalMessage(message) => {
-                self.send_ws_message(message).await.ok_or_terminate(ctx);
+                let _ = self.send_ws_message(message).await;
             }
             UserMessage::SwitchQualityLayer { quality } => {
                 self.subscriber.try_send(SubscriberMessage::SwitchQualityLayer { quality }).await.ok_or_terminate(ctx);
                 self.send_ws_message(SignalMessage::ConnectionQuality { quality }).await.ok_or_terminate(ctx);
             }
             UserMessage::SyncMessage(message) => {
-                self.handle_ws_message(ctx, message).await.ok_or_terminate(ctx);
+                let _ = self.handle_ws_message(ctx, message).await;
             },
             UserMessage::ConnectAudio(request) => {
                 self.subscriber.try_send(SubscriberMessage::ConnectAudio(request))
@@ -102,7 +110,7 @@ impl<C: SyncChannel, S: Storage> Actor for User<C, S> {
     async fn stopping(self, _: &Ctx<'_, Self>) {
         self.subscriber.try_terminate().await.ok();
         self.publisher.try_terminate().await.ok();
-        let _ = self.room.send(RoomMessage::Leave { peer_id: self.peer_id.clone() }).await;
+        let _ = self.room.send(RoomMessage::Leave { peer_id: self.id.clone() }).await;
         tracing::info!("🔴 [UserActor] Пользователь уничтожен.");
     }
 }
@@ -119,7 +127,6 @@ pub enum SignalMessage {
     ConnectionQuality { quality: StreamQuality },
     Welcome { peer_id: Uuid, },
     PeerLeft { peer_id: Uuid },
-    Connect { device_type: DeviceType },
 }
 
 impl From<SignalMessage> for String {
@@ -156,18 +163,19 @@ pub enum Target {
     Subscriber
 }
 
-impl<C: SyncChannel, S: Storage> User<C, S> {
+impl<C: SignalingClient, S: Storage> User<C, S> {
     async fn initiate(&mut self, ctx: &Ctx<'_, Self>) -> Result<(), Error> {
+        self.room.send(RoomMessage::Join { peer_id: self.id, addr: ctx.addr.clone() }).await?;
         let addr = ctx.addr.clone();
         let subscriber = Subscriber::new(addr.clone()).await?.start();
         self.subscriber.set_addr(subscriber);
-        let publisher = Publisher::new(addr.clone(), self.room.clone(), self.peer_id).await?.start();
+        let publisher = Publisher::new(addr.clone(),  self.room.clone(), self.id, self.session_params.device).await?.start();
         self.publisher.set_addr(publisher);
         self.send_welcome().await?;
         Ok(())
     }
     async fn send_welcome(&mut self) -> Result<(), Error> {
-        self.sync_channel.send(SignalMessage::Welcome { peer_id: self.peer_id }.into())
+        self.signaling_client.send(SignalMessage::Welcome { peer_id: self.id }.into())
             .await
             .map_err(|e| Error::SystemError { message: e.to_string().into() })?;
         Ok(())
@@ -182,9 +190,6 @@ impl<C: SyncChannel, S: Storage> User<C, S> {
             SyncMessage::Error(e) => return Err(Error::SystemError { message: e.into() })
         };
         match message {
-            SignalMessage::Connect { device_type } => {
-                let _ = self.publisher.try_send(PublisherMessage::InitiateMonitoring { device_type }).await;
-            },
             SignalMessage::Rtc { target, message_type } => {
                 match target {
                     Target::Publisher => {
@@ -200,14 +205,14 @@ impl<C: SyncChannel, S: Storage> User<C, S> {
         Ok(())
     }
     async fn send_ws_message(&mut self, msg: SignalMessage) -> Result<(), Error> {
-        self.sync_channel.send(msg.into())
+        self.signaling_client.send(msg.into())
             .await
             .map_err(|e| Error::SystemError { message: e.to_string().into() })?;
         Ok(())
     }
     async fn unsubscribe(&mut self, peer_id: Uuid) -> Result<(), Error> {
         let _ = self.subscriber.try_send(SubscriberMessage::Unsubscribe { peer_id }).await;
-        self.sync_channel.send(SignalMessage::PeerLeft { peer_id }.into())
+        self.signaling_client.send(SignalMessage::PeerLeft { peer_id }.into())
             .await
             .map_err(|e| Error::SystemError { message: e.to_string().into() })?;
         Ok(())

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use sfu::{actor::{Actor, StreamItem::Next}, error::Error, room::{ RoomMessage}, server::{Server, ServerMessage}, user::User};
+use sfu::{actor::{Actor, StreamItem::Next}, error::Error, room::RoomMessage, server::{Server, ServerMessage}, user::{SessionParams, User}};
 
 use crate::{FileStorage, spawn_test_client};
 
@@ -15,8 +15,8 @@ async fn ice_restart() -> Result<(), Error> {
     let (_, room) = rx.await.unwrap();
     let task_1 = {
         let (channel, mut client, stream) = spawn_test_client().await?;
-        let user = User::new(channel, room.clone()).await?;
-        let peer_id = user.peer_id;
+        let user = User::new(channel, SessionParams { device: sfu::quality_monitor::DeviceType::Desktop }, room.clone()).await?;
+        let peer_id = user.id;
         let user = user.start();
         user.add_stream(tokio_stream::wrappers::ReceiverStream::new(stream), 
         |m| Next(sfu::user::UserMessage::SyncMessage(sfu::user::SyncMessage::Message(m))));
@@ -40,8 +40,8 @@ async fn ice_restart() -> Result<(), Error> {
     };
     let task_2 = {
         let (channel, mut client, stream) = spawn_test_client().await?;
-        let user = User::new(channel, room.clone()).await?;
-        let peer_id = user.peer_id;
+        let user = User::new(channel, SessionParams { device: sfu::quality_monitor::DeviceType::Desktop }, room.clone()).await?;
+        let peer_id = user.id;
         let user = user.start();
         user.add_stream(tokio_stream::wrappers::ReceiverStream::new(stream), 
         |m| Next(sfu::user::UserMessage::SyncMessage(sfu::user::SyncMessage::Message(m))));

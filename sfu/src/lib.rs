@@ -28,7 +28,7 @@ use webrtc::rtp::packet::Packet;
 use webrtc::rtp_transceiver::rtp_codec::{RTCRtpHeaderExtensionCapability, RTPCodecType};
 use crate::actor::{Actor, Addr};
 use crate::error::Error;
-use crate::user::{SignalMessage, Target, initiate_ice_restart};
+use crate::user::{SignalMessage, Target};
 
 
 pub type PacketSender = tokio::sync::broadcast::Sender<Packet>;
@@ -81,7 +81,7 @@ pub async fn create_peer() -> Result<RTCPeerConnection, Error> {
     Ok(peer)
 }
 
-pub trait SyncChannel: Send + 'static {
+pub trait SignalingClient: Send + 'static {
     type Item: From<SignalMessage>;
     type Error: std::error::Error + Debug;
     fn send(&mut self, message: Self::Item) -> impl Future<Output = Result<(), Self::Error>> + Send;
@@ -130,9 +130,6 @@ pub trait IceRestartExt: Actor where Self::Message: From<RTCIceConnectionState> 
         match state {
             RTCIceConnectionState::Failed => {
                 *self.disconnected() = true;
-                let pc = self.peer_connection();        
-                let message = initiate_ice_restart(pc, Self::TARGET).await?;
-                self.send_target_message(message).await?;
                 *self.retry_connect_attempts() += 1;
                 addr.send(Self::CHECK_ICE_STATE).await?;
             },

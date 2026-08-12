@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use webrtc::{peer_connection::RTCPeerConnection, rtp::packet::Packet, rtp_transceiver::{RTCRtpTransceiverInit, rtp_codec::RTCRtpCodecCapability, rtp_sender::RTCRtpSender, rtp_transceiver_direction::RTCRtpTransceiverDirection}, track::track_local::{TrackLocalWriter, track_local_static_rtp::TrackLocalStaticRTP}};
 
-use crate::{actor::{Actor, Addr, StoppingExt}, error::Error, rtp_packet_gateway_router::{AudioRouterContext, RtpPacketGatewayRouter, RtpPacketGatewayRouterMessage, RtpPacketMessage}, user::ConnectionRequest};
+use crate::{actor::{Actor, Addr}, error::Error, rtp_packet_gateway_router::{AudioRouterContext, RtpPacketGatewayRouter, RtpPacketGatewayRouterMessage, RtpPacketMessage}, user::ConnectionRequest};
 
 pub struct AudioPacketForwarder {
     pub track: Arc<TrackLocalStaticRTP>,

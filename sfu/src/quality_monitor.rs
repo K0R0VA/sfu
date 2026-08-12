@@ -7,9 +7,9 @@ use tokio_stream::wrappers::IntervalStream;
 use uuid::Uuid;
 use webrtc::{peer_connection::RTCPeerConnection, stats::{StatsReport, StatsReportType}};
 
-use crate::{CurrentStats, Storage, StorageConfiguration, SyncChannel, actor::{Actor, Addr, StoppingExt, StreamItem}, error::Error, room::StreamQuality, user::{User, UserMessage}};
+use crate::{CurrentStats, Storage, StorageConfiguration, SignalingClient, actor::{Actor, Addr, StoppingExt, StreamItem}, error::Error, room::StreamQuality, user::{User, UserMessage}};
 
-pub struct QualityMonitor<C: SyncChannel, S: Storage> {
+pub struct QualityMonitor<C: SignalingClient, S: Storage> {
     publisher_connection: Arc<RTCPeerConnection>,
     id: Uuid,
     user: Addr<User<C, S>>,
@@ -43,9 +43,9 @@ impl From<DeviceType> for QualityThresholds {
                 high_loss: 2.0,
             },
             DeviceType::Mobile => QualityThresholds {
-                low_bitrate: 75_000,
-                mid_bitrate: 150_000,
-                high_bitrate: 350_000,
+                low_bitrate: 100_000,
+                mid_bitrate: 300_000,
+                high_bitrate: 750_000,
                 low_loss: 15.0,
                 mid_loss: 8.0,
                 high_loss: 2.0,
@@ -54,7 +54,7 @@ impl From<DeviceType> for QualityThresholds {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 pub enum DeviceType {
     Desktop,
@@ -67,7 +67,7 @@ pub enum QualityMonitorMessage {
     Close
 }
 
-impl<C: SyncChannel, S: Storage> Actor for QualityMonitor<C, S> {
+impl<C: SignalingClient, S: Storage> Actor for QualityMonitor<C, S> {
     type Message = QualityMonitorMessage;
     async fn handle(&mut self, ctx: &mut crate::actor::Ctx<'_, Self>, m: Self::Message) {
         match m {
@@ -76,6 +76,7 @@ impl<C: SyncChannel, S: Storage> Actor for QualityMonitor<C, S> {
                 self.update_stats().await;
                 self.save_stats().await.ok_or_terminate(ctx);
                 if let Some(quality) = self.get_quality() {
+                    tracing::info!("[QualityMionitor] {:?} {:#?}", quality, self.current_stats);
                     let current_quality = match self.current_quality {
                         Some(current_quality) => current_quality,
                         None => {
@@ -123,7 +124,7 @@ impl<C: SyncChannel, S: Storage> Actor for QualityMonitor<C, S> {
     async fn stopping(self, _ctx: &crate::actor::Ctx<'_, Self>) {}
 }
 
-impl<C: SyncChannel, S: Storage> QualityMonitor<C, S> {
+impl<C: SignalingClient, S: Storage> QualityMonitor<C, S> {
     pub async fn new(publisher_connection: Arc<RTCPeerConnection>, user: Addr<User<C, S>>, thresholds: QualityThresholds) -> Result<Self, Error> {
         let configuration = <S::Configuration>::from_env()
             .map_err(|e| Error::SystemError { message: e.to_string().into() })?;
@@ -138,7 +139,7 @@ impl<C: SyncChannel, S: Storage> QualityMonitor<C, S> {
             last_stats_time: Instant::now(),
             current_quality: None,
             consecutive_high_signals: 0,
-            update_period: Duration::from_secs(10)
+            update_period: Duration::from_secs(1)
         })
     }
     async fn update_stats(&mut self) {
@@ -232,7 +233,6 @@ impl<C: SyncChannel, S: Storage> QualityMonitor<C, S> {
         if self.current_stats.last_bytes_received == 0 {
             return None;
         }
-        // От худшего к лучшему
         if self.current_stats.packet_loss > self.thresholds.high_loss || 
             self.current_stats.bitrate_bps < self.thresholds.low_bitrate {
             return Some(StreamQuality::Low);
