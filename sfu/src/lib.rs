@@ -16,7 +16,7 @@ use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::sync::Arc;
 use chrono::{DateTime, Utc};
-use rtc::interceptor::Registry;
+use rtc::interceptor::{ Registry};
 use rtc::rtp_transceiver::RTCRtpTransceiverDirection;
 use rtc::rtp_transceiver::rtp_sender::{RTCRtpHeaderExtensionCapability, RtpCodecKind};
 use uuid::Uuid;
@@ -26,7 +26,7 @@ use crate::error::Error;
 use crate::user::{SignalMessage};
 
 
-pub async fn create_peer(handler: impl PeerConnectionEventHandler, direction: RTCRtpTransceiverDirection) -> Result<Box<dyn PeerConnection>, Error> {
+pub async fn create_peer(handler: impl PeerConnectionEventHandler) -> Result<Box<dyn PeerConnection>, Error> {
     let mut m = MediaEngine::default();
     m.register_default_codecs()?;
     for uri in [
@@ -37,13 +37,13 @@ pub async fn create_peer(handler: impl PeerConnectionEventHandler, direction: RT
         m.register_header_extension(
             RTCRtpHeaderExtensionCapability { uri: uri.to_owned() },
             RtpCodecKind::Video,
-            Some(direction),
+            None,
         )?;
     }
     let registry = register_default_interceptors(Registry::new(), &mut m)?;
     let config = RTCConfigurationBuilder::default()
         .with_ice_servers(vec![RTCIceServer {
-            urls: vec!["stun:stun.bluesip.net:3478".to_owned()],
+            urls: vec!["stun:stun.sipnet.ru:3478".to_owned()],
             ..Default::default()
         }])
         .build();

@@ -42,24 +42,24 @@ export class PublisherConnection extends PeerConnection {
                 high: deviceType === 'desktop' ?  4_000_000 : 500_000   
             };
             const encodings = [
-                {
-                    rid: 'low',
-                    maxBitrate: bitrateSettings.low,
-                    scaleResolutionDownBy: getRoundedResolution(4.0),
-                    maxFramerate: 24,
-                },
-                {
-                    rid: 'mid',
-                    maxBitrate: bitrateSettings.mid,
-                    scaleResolutionDownBy: getRoundedResolution(2.0),
-                    maxFramerate: 30,
-                },
-                {
-                    rid: 'high',
-                    maxBitrate: bitrateSettings.high,
-                    scaleResolutionDownBy: getRoundedResolution(1),
-                    maxFramerate: 30,
-                }
+                // {
+                //     rid: 'low',
+                //     maxBitrate: bitrateSettings.low,
+                //     scaleResolutionDownBy: getRoundedResolution(4.0),
+                //     maxFramerate: 24,
+                // },
+                // {
+                //     rid: 'mid',
+                //     maxBitrate: bitrateSettings.mid,
+                //     scaleResolutionDownBy: getRoundedResolution(2.0),
+                //     maxFramerate: 30,
+                // },
+                // {
+                //     rid: 'high',
+                //     maxBitrate: bitrateSettings.high,
+                //     scaleResolutionDownBy: getRoundedResolution(1),
+                //     maxFramerate: 30,
+                // }
             ];
             const video_track = video_stream.getVideoTracks()[0];
             this.video_transceiver = this.pc.addTransceiver(video_track, {

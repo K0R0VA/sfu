@@ -1,5 +1,5 @@
 use std::{str::FromStr, sync::Arc};
-use rtc::rtp_transceiver::{RTCRtpTransceiverDirection, rtp_sender::RtpCodecKind};
+use rtc::rtp_transceiver::{ rtp_sender::RtpCodecKind};
 use tokio::sync::mpsc::Receiver;
 use uuid::Uuid;
 use webrtc::{media_stream::track_remote::TrackRemote, peer_connection::{PeerConnection, PeerConnectionEventHandler, RTCIceCandidateInit, RTCPeerConnectionIceEvent, RTCSessionDescription}};
@@ -22,7 +22,7 @@ impl<C: SignalingClient, S: Storage> Publisher<C, S> {
     pub async fn new(user: Addr<User<C, S>>, room: Addr<Room<C, S>>, peer_id: Uuid) -> Result<Self, Error> {
         let (tx, rx) = tokio::sync::mpsc::channel(8);
         let handler =  PublisherPeerConnectionHandler { tx };
-        let pc = create_peer(handler, RTCRtpTransceiverDirection::Sendrecv).await?;
+        let pc = create_peer(handler).await?;
         let pc: Arc<dyn PeerConnection> = pc.into();
         let thresholds = QualityThresholds::default();
         let quality_monitor = QualityMonitor::new(
@@ -62,7 +62,6 @@ impl<C: SignalingClient, S: Storage> Actor for Publisher<C, S> {
     async fn handle(&mut self, ctx: &mut Ctx<'_, Self>, msg: Self::Message) {
         match msg {
             PublisherMessage::NewVideoTrack {quality, video_router_stream } => {
-                tracing::info!("[PublisherMessage] NewVideoTrack");
                 self.video_track_keyframe_interceptors.push(video_router_stream.keyframe_interceptor.clone());
                 self.room.send(RoomMessage::AddVideoTrack { 
                     peer_id: self.peer_id, 
@@ -83,18 +82,18 @@ impl<C: SignalingClient, S: Storage> Actor for Publisher<C, S> {
                 self.user.send(UserMessage::SignalMessage(message)).await.ok_or_terminate(ctx);
             },
             PublisherMessage::OnTrack(track) => {
-                let ssrcs = track.ssrcs().await;
-                let ssrc = ssrcs[0];
-                let mime_type = track.codec(ssrc).await.unwrap().mime_type;
-                let codec = Codec::from_str(&mime_type).unwrap_or_default();
                 let kind = track.kind().await;
                 match kind {
                     RtpCodecKind::Audio | RtpCodecKind::Unspecified => { 
+                        let ssrcs = track.ssrcs().await;
+                        let ssrc = ssrcs[0];
+                        let mime_type = track.codec(ssrc).await.unwrap().mime_type;
+                        let codec = Codec::from_str(&mime_type).unwrap_or_default();
                         let router = RtpPacketGatewayRouter::<AudioPacketForwarder, AudioRouterContext>::spawn(track, AudioRouterContext {});
                         let _ = self.room.send(RoomMessage::AddAudioTrack { peer_id: self.peer_id, router: AudioRouterStream { router , codec } }).await;
                     },
                     RtpCodecKind::Video => {
-                        SimulcastManager::spawn(track, codec, ctx.addr.clone()).await.ok_or_terminate(ctx);
+                        SimulcastManager::spawn(track, ctx.addr.clone()).await.ok_or_terminate(ctx);
                     }   
                 };
             }
@@ -171,7 +170,6 @@ pub struct PublisherPeerConnectionHandler {
 #[async_trait::async_trait]
 impl PeerConnectionEventHandler for PublisherPeerConnectionHandler {
     async fn on_track(&self, track: Arc<dyn TrackRemote>) {
-        tracing::info!("PeerConnectionEventHandler on_track");
         let _ = self.tx.send(PublisherMessage::OnTrack(track)).await;
     }
     async fn on_ice_candidate(&self, event: RTCPeerConnectionIceEvent) {

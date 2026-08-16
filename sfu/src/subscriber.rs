@@ -1,8 +1,8 @@
 use std::{collections::HashMap};
-use rtc::{peer_connection::RTCPeerConnection, rtp_transceiver::RTCRtpTransceiverDirection};
+use rtc::{rtp_transceiver::RTCRtpTransceiverDirection};
 use tokio::sync::mpsc::Receiver;
 use uuid::Uuid;
-use webrtc::peer_connection::{PeerConnection, PeerConnectionEventHandler, RTCIceCandidateInit, RTCPeerConnectionIceEvent, RTCSessionDescription};
+use webrtc::peer_connection::{PeerConnection, PeerConnectionEventHandler, RTCIceCandidateInit, RTCPeerConnectionIceEvent, RTCSessionDescription, RTCSignalingState};
 use crate::{SignalingClient, Storage, actor::{Actor, Addr, Ctx, StoppingExt}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, keyframe_interceptor::KeyframeInterceptor, room::StreamQuality, rtp_packet_gateway_router::{AudioRouterContext, RouterWaker, VideoRouterContext}, subscriber::SubscriberMessage::OnNegotiationNeeded, user::{ConnectionRequest, IceCandidate, MessageType, SignalMessage, Target, User, UserMessage}, video_layer_manager::{QualityLayer, VideoLayerManager, VideoLayerManagerMessage}, video_packet_forwarder::VideoPacketForwarder};
 
 pub struct Subscriber<C: SignalingClient, S: Storage> {
@@ -11,9 +11,9 @@ pub struct Subscriber<C: SignalingClient, S: Storage> {
     pub audio_subscriptions: HashMap<Uuid, Addr<AudioPacketForwarder>>,
     pub video_subscriptions: HashMap<Uuid, Addr<VideoLayerManager>>,
     pub current_quality: StreamQuality,
-    pub disconnected: bool,
-    pub retry_connect_attempts: u8,
     pub rx: Option<Receiver<SubscriberMessage>>,
+    pub signaling_state: Option<RTCSignalingState>,
+    pub should_send_offer: bool,
 }
 
 const TARGET: Target = Target::Subscriber;
@@ -21,16 +21,16 @@ const TARGET: Target = Target::Subscriber;
 impl<C: SignalingClient, S: Storage> Subscriber<C, S> {
     pub async fn new(user: Addr<User<C, S>>) -> Result<Self, Error> {
         let (tx, rx) = tokio::sync::mpsc::channel(8);
-        let pc = create_peer(SubscriberPeerConnectionHandler {tx}, RTCRtpTransceiverDirection::Recvonly).await?;
+        let pc = create_peer(SubscriberPeerConnectionHandler {tx}).await?;
         Ok(Self {
             user,
             pc,
             audio_subscriptions: HashMap::new(),
             video_subscriptions: HashMap::new(),
-            disconnected: false,
-            retry_connect_attempts: 0,
             current_quality: StreamQuality::High,
-            rx: Some(rx)
+            rx: Some(rx),
+            signaling_state: None,
+            should_send_offer: false
         })
     }
 }
@@ -40,6 +40,7 @@ pub enum SubscriberMessage {
     IceCandidate { 
         candidate: IceCandidate,
     },
+    SignalingStateChanged (RTCSignalingState),
     Websocket (MessageType),
     ConnectAudio(ConnectionRequest<AudioPacketForwarder, AudioRouterContext>),
     ConnectVideo { 
@@ -56,6 +57,12 @@ impl<C: SignalingClient, S: Storage> Actor for Subscriber<C, S> {
     type Message = SubscriberMessage;
     async fn handle(&mut self, ctx: &mut Ctx<'_, Self>, msg: Self::Message) {
         match msg {
+            SubscriberMessage::SignalingStateChanged(state) => {
+                if self.should_send_offer && state == RTCSignalingState::Stable {
+                    self.send_offer().await.ok_or_terminate(ctx);
+                }
+                self.signaling_state = Some(state);
+            }
             SubscriberMessage::SwitchQualityLayer { quality } => {
                 self.current_quality = quality;
                 for subscription in self.video_subscriptions.values() {
@@ -73,11 +80,9 @@ impl<C: SignalingClient, S: Storage> Actor for Subscriber<C, S> {
                 self.handle_ws_message(message).await.ok_or_terminate(ctx);
             },
             SubscriberMessage::ConnectAudio(request) => {
-                tracing::info!("connect audio");
                 self.connect_audio(request).await.ok_or_terminate(ctx);
             },
             SubscriberMessage::ConnectVideo {quality, request, keyframe_interceptor, wake_notification} => {
-                tracing::info!("connect video");
                self.connect_video(quality, request, keyframe_interceptor, wake_notification).await.ok_or_terminate(ctx);
             },
             SubscriberMessage::Unsubscribe { peer_id: from } => {
@@ -144,7 +149,10 @@ impl<C: SignalingClient, S: Storage> Subscriber<C, S> {
         Ok(())
     }
     async fn send_offer(&mut self) -> Result<(), Error> {
-        tracing::info!("send_offer");
+        if self.signaling_state.is_some() && self.signaling_state != Some(RTCSignalingState::Stable) { 
+            self.should_send_offer = true;
+            return Ok(()); 
+        }
         let offer = self.pc.create_offer(None).await?;
         self.pc.set_local_description(offer.clone()).await?;
         let message = SignalMessage::Rtc {
@@ -172,7 +180,7 @@ impl<C: SignalingClient, S: Storage> Subscriber<C, S> {
         match self.video_subscriptions.entry(peer_id) {
             std::collections::hash_map::Entry::Occupied(o) => {
                 let addr = o.get();
-                let _ = addr.send(VideoLayerManagerMessage::AddLayer { quality, layer  }).await;
+                addr.send(VideoLayerManagerMessage::AddLayer { quality, layer  }).await?;
             },
             std::collections::hash_map::Entry::Vacant(v) => {
                 let video_subscription = VideoLayerManager::new(
@@ -208,10 +216,15 @@ pub struct SubscriberPeerConnectionHandler {
 impl PeerConnectionEventHandler for SubscriberPeerConnectionHandler {
     async fn on_ice_candidate(&self, event: RTCPeerConnectionIceEvent) {
         if let Ok(RTCIceCandidateInit { candidate, sdp_mid, sdp_mline_index, .. }) = event.candidate.to_json() {
-            let _ = self.tx.send(SubscriberMessage::IceCandidate { candidate: IceCandidate { candidate, sdp_mid, sdp_mline_index } }).await;
+            self.tx.send(SubscriberMessage::IceCandidate { candidate: IceCandidate { candidate, sdp_mid, sdp_mline_index } })
+                .await
+                .expect("on_ice_candidate");
         }
     }
+    async fn on_signaling_state_change(&self, state: RTCSignalingState) {
+        self.tx.send(SubscriberMessage::SignalingStateChanged(state)).await.expect("on_signaling_state_change");
+    }
     async fn on_negotiation_needed(&self) {
-        let _ = self.tx.send(SubscriberMessage::OnNegotiationNeeded).await;
+        self.tx.send(SubscriberMessage::OnNegotiationNeeded).await.expect("on_negotiation_needed");
     }
 }

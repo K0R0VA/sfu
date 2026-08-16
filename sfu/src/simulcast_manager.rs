@@ -23,7 +23,7 @@ impl<C: SignalingClient, S: Storage> SimulcastManager<C, S> {
         }
     }
     async fn handle_new_layer(&mut self, ssrc: u32, rid: Option<String>) -> Result<(), Error> {
-        let quality = StreamQuality::from_str(&rid.unwrap_or_default())?;
+        let quality = StreamQuality::from_str(rid.as_deref().unwrap_or("high"))?;
         let (wake_rx, wake_tx) = tokio::sync::broadcast::channel(1);
         let wake_tx = Arc::new(wake_tx);
         let context = VideoRouterContext::new(self.track.clone(), quality, ssrc, wake_rx);   
@@ -42,6 +42,7 @@ impl<C: SignalingClient, S: Storage> SimulcastManager<C, S> {
     async fn send_packet(&mut self, mut packet: Packet) -> Result<(), Error> {
         let ssrc = packet.header.ssrc;
         packet.header.extensions.clear();
+        packet.header.extension = false;
         let Some(router) = self.layers.get(&ssrc) else { return Ok(()); };
         router.send(RtpPacketGatewayRouterMessage::RtpPacket(packet)).await?;
         Ok(())
@@ -57,11 +58,11 @@ impl<C: SignalingClient, S: Storage> SimulcastManager<C, S> {
         }
         Ok(())
     }
-    pub async fn spawn(track: Arc<dyn TrackRemote>, codek: Codec, publisher: Addr<Publisher<C, S>>) -> Result<(), Error> {
+    pub async fn spawn(track: Arc<dyn TrackRemote>, publisher: Addr<Publisher<C, S>>) -> Result<(), Error> {
         let ssrc = track.ssrcs().await[0];
-        let rid = track.rid(ssrc).await;
-        let mut this= Self::new(track, codek, publisher);
-        this.handle_new_layer(ssrc, rid).await?;
+        let mime_type = track.codec(ssrc).await.map(|c| c.mime_type).unwrap();
+        let codec = Codec::from_str(&mime_type).unwrap_or_default();
+        let mut this= Self::new(track, codec, publisher);
         tokio::spawn(async move {
             this.consume_events().await?;
             Result::<_, Error>::Ok(())

@@ -3,7 +3,6 @@ import { WebrtcConnection } from "./webrtc";
 
 export class UserWebsocket {
     constructor(users, room_id, room_status, room_name) {
-        console.log(room_id);
         this.ws = createWebSocket(room_id.value);
         this.webrtc_connection = new WebrtcConnection(users, this.ws);
         this.room_status = room_status;
@@ -113,9 +112,6 @@ function createWebSocket (room_id) {
 
 export function getDeviceType() {
     const ua = navigator.userAgent;
-    // if (/(tablet|ipad|playbook|silk)|(android(?!.*mobi))/i.test(ua)) {
-    //     return 'tablet';
-    // }
     if (/Mobile|Android|iP(hone|od)|IEMobile|BlackBerry|Kindle|Silk-Accelerated|(hpw|web)OS|Opera M(obi|ini)/.test(ua)) {
         return 'mobile';
     }

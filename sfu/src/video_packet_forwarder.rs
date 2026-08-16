@@ -11,7 +11,6 @@ pub struct VideoPacketForwarder {
     pending_channel: Option<Addr<RtpPacketGatewayRouter<Self, VideoRouterContext>>>,
     start_instant: Instant,
     ssrc: u32,
-    last_packet_time: Instant,
     current_generated_ts: u32,
     last_sequence_number: u16,
     is_layer_switching: bool,
@@ -25,7 +24,6 @@ impl VideoPacketForwarder {
             last_sequence_number: 0,
             is_layer_switching: false, 
             start_instant: Instant::now(),
-            last_packet_time: Instant::now(),
             current_generated_ts: 0,
             ssrc,
             current_quality: None,
@@ -120,14 +118,13 @@ impl Actor for VideoPacketForwarder {
             }
             VideoPacketForwarderMessage::RtpPacket { packet, quality} => {
                 self.forward(ctx, quality, packet).await;
-                self.last_packet_time = Instant::now();
             },
             VideoPacketForwarderMessage::Timeout => {
                 let message= VideoLayerManagerMessage::FallbackToLowQuality;
                 // self.video_layer_manager
                 //     .send(message)
                 //     .await
-                //     .ok_or_terminate(ctx);
+                //     .ok_or_terminate(ctx);e
             }
             VideoPacketForwarderMessage::MissedPackets(missed_packets) => { 
                 // self.handle_missed_packets(missed_packets).await.ok_or_terminate(ctx);

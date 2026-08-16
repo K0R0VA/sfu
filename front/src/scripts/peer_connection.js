@@ -2,7 +2,7 @@ export class PeerConnection {
     constructor(target, ws) {
         let config = { 
             iceServers: [
-                { urls: ["stun:stun.bluesip.net:3478"] },
+                { urls: ["stun:stun.sipnet.ru:3478"] },
             ] 
         }
         this.ws = ws;

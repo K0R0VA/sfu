@@ -35,7 +35,7 @@ impl VideoLayerManager {
         let ssrc = rand::random();
         let track = MediaStreamTrack::new(
                 stream_id.clone(),  
-                stream_id.clone(),
+                Uuid::new_v4().to_string(),
             "Webcam".to_string(),
             RtpCodecKind::Video,
             vec![RTCRtpEncodingParameters {
@@ -47,6 +47,7 @@ impl VideoLayerManager {
                     mime_type: codec.to_string(),
                     ..Default::default()
                 },
+                active: true,
                 ..Default::default()
             }],
         );
@@ -182,6 +183,7 @@ impl Actor for VideoLayerManager {
         tokio::spawn(async move {
             while let Some(TrackLocalEvent::OnRtcpPacket(packets)) = track.poll().await {
                 for packet in packets {
+                    tracing::info!("{:?}", packet.as_any());
                     if packet.as_any().downcast_ref::<PictureLossIndication>().is_some() {
                         let result = addr.send(VideoLayerManagerMessage::ForcePli).await;
                         if result.is_err() {
