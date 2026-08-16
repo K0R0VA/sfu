@@ -17,7 +17,6 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use rtc::interceptor::{ Registry};
-use rtc::rtp_transceiver::RTCRtpTransceiverDirection;
 use rtc::rtp_transceiver::rtp_sender::{RTCRtpHeaderExtensionCapability, RtpCodecKind};
 use uuid::Uuid;
 use webrtc::peer_connection::{MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, RTCConfigurationBuilder, RTCIceServer, register_default_interceptors};

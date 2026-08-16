@@ -1,7 +1,7 @@
 use std::{collections::{HashMap}, sync::Arc};
 use rtc::{media_stream::MediaStreamTrack, rtcp::{payload_feedbacks::picture_loss_indication::PictureLossIndication, transport_feedbacks::transport_layer_nack::TransportLayerNack}, rtp_transceiver::{RTCRtpTransceiverDirection, RTCRtpTransceiverInit, rtp_sender::{RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind}}};
 use uuid::Uuid;
-use webrtc::{media_stream::track_local::{TrackLocal, TrackLocalEvent, static_rtp::TrackLocalStaticRTP}, peer_connection::PeerConnection};
+use webrtc::{media_stream::{track_local::{TrackLocal, TrackLocalEvent, static_rtp::TrackLocalStaticRTP}}, peer_connection::PeerConnection};
 
 use crate::{actor::{Actor, Addr, StoppingExt}, error::Error, keyframe_interceptor::{KeyframeInterceptor, RequestKeyframe}, room::{Codec, StreamQuality}, rtp_packet_gateway_router::{RouterWaker, RtpPacketGatewayRouter, VideoRouterContext}, video_packet_forwarder::{VideoPacketForwarder, VideoPacketForwarderMessage}};
 
@@ -67,7 +67,7 @@ impl VideoLayerManager {
                 ..Default::default()
             }] 
         })).await?;
-        let packet_forwarder = VideoPacketForwarder::new(output_track.clone(), ssrc)
+        let packet_forwarder = VideoPacketForwarder::new(output_track.clone(), ssrc, codec.into())
             .start_with_capacity(2048);
         quality_layers.insert(quality, quality_layer);
         let this = Self { 

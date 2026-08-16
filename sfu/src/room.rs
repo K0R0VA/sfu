@@ -53,7 +53,20 @@ pub enum Codec {
     VP8,
     VP9,
     H264,
+    AV1,
     Audio (String)
+}
+
+impl Into<u8> for Codec {
+    fn into(self) -> u8 {
+        match self {
+            Codec::AV1 => 41,
+            Codec::H264 => 102,
+            Codec::VP8 => 96,
+            Codec::VP9 => 100,
+            Codec::Audio(_) => 0,
+        }
+    }
 }
 
 impl Display for Codec {
@@ -62,8 +75,8 @@ impl Display for Codec {
             Codec::H264 => write!(f, "video/H264"),
             Codec::VP8 => write!(f, "video/VP8"),
             Codec::VP9 => write!(f, "video/VP9"),
+            Codec::AV1 => write!(f, "video/AV1"),
             Codec::Audio(audio) => write!(f, "{audio}")
-
         }
     }
 }
@@ -75,6 +88,7 @@ impl FromStr for Codec {
             "video/VP8" => Ok(Codec::VP8),
             "video/VP9" => Ok(Codec::VP9),
             "video/H264" => Ok(Codec::H264),
+            "video/AV1" => Ok(Codec::AV1),
             mime_type => Ok(Codec::Audio(mime_type.to_string()))
         }
     }

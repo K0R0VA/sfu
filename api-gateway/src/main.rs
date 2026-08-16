@@ -35,7 +35,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }                                                          
 
-
 async fn ws_handler(
     room_id: Path<Uuid>,
     session_params: Query<SessionParams>,

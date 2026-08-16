@@ -11,6 +11,7 @@ pub struct VideoPacketForwarder {
     pending_channel: Option<Addr<RtpPacketGatewayRouter<Self, VideoRouterContext>>>,
     start_instant: Instant,
     ssrc: u32,
+    payload_type: u8,
     current_generated_ts: u32,
     last_sequence_number: u16,
     is_layer_switching: bool,
@@ -18,7 +19,7 @@ pub struct VideoPacketForwarder {
 
 
 impl VideoPacketForwarder {
-    pub fn new(track: Arc<dyn TrackLocal>, ssrc: u32,) -> Self {
+    pub fn new(track: Arc<dyn TrackLocal>, ssrc: u32, payload_type: u8) -> Self {
         Self {
             track,
             last_sequence_number: 0,
@@ -26,6 +27,7 @@ impl VideoPacketForwarder {
             start_instant: Instant::now(),
             current_generated_ts: 0,
             ssrc,
+            payload_type,
             current_quality: None,
             current_channel: None,
             pending_channel: None,
@@ -78,6 +80,7 @@ impl VideoPacketForwarder {
     }
     fn modify_header(&mut self, packet: &mut Packet) {
         self.last_sequence_number = self.last_sequence_number.wrapping_add(1);
+        packet.header.payload_type = self.payload_type;
         packet.header.ssrc = self.ssrc;
         packet.header.sequence_number = self.last_sequence_number;
         packet.header.timestamp = self.current_generated_ts;
