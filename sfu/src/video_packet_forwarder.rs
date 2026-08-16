@@ -2,13 +2,14 @@ use std::{sync::Arc, time::Instant};
 use rtc::rtp::Packet;
 use webrtc::media_stream::track_local::{TrackLocal};
 
-use crate::{actor::{Actor, Addr, Ctx, StoppingExt}, room::StreamQuality, rtp_packet_gateway_router::{RtpPacketGatewayRouter, RtpPacketGatewayRouterMessage, RtpPacketMessage, VideoRouterContext}, video_layer_manager::{VideoLayerManager, VideoLayerManagerMessage}};
+use crate::{actor::{Actor, Addr, Ctx, StoppingExt}, error::Error, room::StreamQuality, rtp_packet_gateway_router::{RtpPacketGatewayRouter, RtpPacketGatewayRouterMessage, RtpPacketMessage, VideoRouterContext}, video_layer_manager::{VideoLayerManager, VideoLayerManagerMessage}};
 
 pub struct VideoPacketForwarder {
     track: Arc<dyn TrackLocal>,
     current_quality: Option<StreamQuality>,
     current_channel: Option<Addr<RtpPacketGatewayRouter<Self, VideoRouterContext>>>,
     pending_channel: Option<Addr<RtpPacketGatewayRouter<Self, VideoRouterContext>>>,
+    timeout_channel: tokio::sync::mpsc::Sender<()>,
     start_instant: Instant,
     ssrc: u32,
     payload_type: u8,
@@ -19,9 +20,10 @@ pub struct VideoPacketForwarder {
 
 
 impl VideoPacketForwarder {
-    pub fn new(track: Arc<dyn TrackLocal>, ssrc: u32, payload_type: u8) -> Self {
+    pub fn new(track: Arc<dyn TrackLocal>, timeout_channel: tokio::sync::mpsc::Sender<()>, ssrc: u32, payload_type: u8) -> Self {
         Self {
             track,
+            timeout_channel,
             last_sequence_number: 0,
             is_layer_switching: false, 
             start_instant: Instant::now(),
@@ -80,7 +82,7 @@ impl VideoPacketForwarder {
     }
     fn modify_header(&mut self, packet: &mut Packet) {
         self.last_sequence_number = self.last_sequence_number.wrapping_add(1);
-        packet.header.payload_type = self.payload_type;
+        // packet.header.payload_type = self.payload_type;
         packet.header.ssrc = self.ssrc;
         packet.header.sequence_number = self.last_sequence_number;
         packet.header.timestamp = self.current_generated_ts;
@@ -123,11 +125,7 @@ impl Actor for VideoPacketForwarder {
                 self.forward(ctx, quality, packet).await;
             },
             VideoPacketForwarderMessage::Timeout => {
-                let message= VideoLayerManagerMessage::FallbackToLowQuality;
-                // self.video_layer_manager
-                //     .send(message)
-                //     .await
-                //     .ok_or_terminate(ctx);e
+                self.timeout_channel.send(()).await.map_err(|_| Error::ChannelClosed).ok_or_terminate(ctx);
             }
             VideoPacketForwarderMessage::MissedPackets(missed_packets) => { 
                 // self.handle_missed_packets(missed_packets).await.ok_or_terminate(ctx);
@@ -141,6 +139,5 @@ impl Actor for VideoPacketForwarder {
         if let Some(channel) = self.pending_channel.take() {
             let _ = channel.send(RtpPacketGatewayRouterMessage::Unsubscribe(ctx.addr.clone())).await;
         }
-        tracing::info!("[VideoPacketForwarder] Stopping");
     }
 }

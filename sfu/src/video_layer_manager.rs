@@ -11,7 +11,8 @@ pub struct VideoLayerManager {
     pub packet_forwarder: Addr<VideoPacketForwarder>,
     pub connection_quality: StreamQuality,
     pub active_quality: Option<StreamQuality>,
-    pub track: Arc<dyn TrackLocal>
+    pub track: Arc<dyn TrackLocal>,
+    pub timeout_channel: Option<tokio::sync::mpsc::Receiver<()>>
 }
 
 #[derive(Clone)]
@@ -67,7 +68,8 @@ impl VideoLayerManager {
                 ..Default::default()
             }] 
         })).await?;
-        let packet_forwarder = VideoPacketForwarder::new(output_track.clone(), ssrc, codec.into())
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        let packet_forwarder = VideoPacketForwarder::new(output_track.clone(), tx, ssrc, codec.into())
             .start_with_capacity(2048);
         quality_layers.insert(quality, quality_layer);
         let this = Self { 
@@ -77,6 +79,7 @@ impl VideoLayerManager {
             connection_quality: current_connection_quality, 
             packet_forwarder,
             track: output_track,
+            timeout_channel: Some(rx)
         };
         Ok(this) 
     }
@@ -219,6 +222,15 @@ impl Actor for VideoLayerManager {
                         })
                         .await;
         } 
+        let addr = ctx.addr.clone();
+        let mut rx = self.timeout_channel.take().expect("timeout_channel should be provided");
+        tokio::spawn(async move {
+            while let Some(_) = rx.recv().await {
+                if addr.send(VideoLayerManagerMessage::FallbackToLowQuality).await.is_err() {
+                    break;
+                }
+            }
+        });
     }
     async fn stopping(self, _: &crate::actor::Ctx<'_, Self>) {
         self.packet_forwarder.terminate().await.ok();

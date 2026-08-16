@@ -1,13 +1,14 @@
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use std::{collections::HashMap, str::FromStr, sync::Arc, time::Duration};
 
 
 use rtc::{rtp::Packet};
+use tokio::{sync::mpsc::Sender, time::timeout};
 use webrtc::media_stream::track_remote::{TrackRemote, TrackRemoteEvent};
 
 use crate::{SignalingClient, Storage, actor::{Actor, Addr}, error::Error, keyframe_interceptor::KeyframeInterceptor, publisher::{Publisher, PublisherMessage}, room::{Codec, StreamQuality, VideoRouterStream}, rtp_packet_gateway_router::{RtpPacketGatewayRouter, RtpPacketGatewayRouterMessage, VideoRouterContext}, video_packet_forwarder::VideoPacketForwarder};
 
 pub struct SimulcastManager<C: SignalingClient, S: Storage> {
-    pub layers: HashMap<u32, Addr<RtpPacketGatewayRouter<VideoPacketForwarder, VideoRouterContext>>>,
+    pub layers: HashMap<u32, Sender<Packet>>,
     pub publisher: Addr<Publisher<C, S>>,
     pub track: Arc<dyn TrackRemote>,
     pub codek: Codec
@@ -24,19 +25,43 @@ impl<C: SignalingClient, S: Storage> SimulcastManager<C, S> {
     }
     async fn handle_new_layer(&mut self, ssrc: u32, rid: Option<String>) -> Result<(), Error> {
         let quality = StreamQuality::from_str(rid.as_deref().unwrap_or("high"))?;
+        tracing::info!("handle_new_layer {:?}", quality);
         let (wake_rx, wake_tx) = tokio::sync::broadcast::channel(1);
         let wake_tx = Arc::new(wake_tx);
         let context = VideoRouterContext::new(self.track.clone(), quality, ssrc, wake_rx);   
         let router = RtpPacketGatewayRouter::new(context).start_with_capacity(1024);
-        self.layers.insert(ssrc, router.clone());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(32); 
+        self.layers.insert(ssrc, tx);
         let keyframe_interceptor = KeyframeInterceptor::new(self.track.clone(), ssrc).start();
         let video_router_stream = VideoRouterStream {
             codec: self.codek.clone(),
             keyframe_interceptor,
-            router,
+            router: router.clone(),
             wake_tx
         };
         self.publisher.send(PublisherMessage::NewVideoTrack { quality, video_router_stream }).await?;
+        tokio::spawn(async move {
+            let timeout_duration = Duration::from_millis(300);
+            let mut is_already_it_timeout = false;
+            loop {
+                let fut = rx.recv();
+                let message = match timeout(timeout_duration, fut).await {
+                    Ok(Some(packet)) => { 
+                        is_already_it_timeout = false;
+                        RtpPacketGatewayRouterMessage::RtpPacket(packet)
+                    },
+                    Ok(None) => break,
+                    Err(_) if is_already_it_timeout => continue,
+                    Err(_) => {
+                        is_already_it_timeout = true;
+                        RtpPacketGatewayRouterMessage::Timeout
+                    }
+                };
+                if router.send(message).await.is_err() {
+                    break;
+                }
+            }
+        });
         Ok(())
     }
     async fn send_packet(&mut self, mut packet: Packet) -> Result<(), Error> {
@@ -44,7 +69,7 @@ impl<C: SignalingClient, S: Storage> SimulcastManager<C, S> {
         packet.header.extensions.clear();
         packet.header.extension = false;
         let Some(router) = self.layers.get(&ssrc) else { return Ok(()); };
-        router.send(RtpPacketGatewayRouterMessage::RtpPacket(packet)).await?;
+        router.send(packet).await.map_err(|_| Error::ChannelClosed)?;
         Ok(())
     }
     async fn consume_events(&mut self) -> Result<(), Error> {

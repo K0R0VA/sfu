@@ -42,30 +42,34 @@ export class PublisherConnection extends PeerConnection {
                 high: deviceType === 'desktop' ?  4_000_000 : 500_000   
             };
             const encodings = [
-                // {
-                //     rid: 'low',
-                //     maxBitrate: bitrateSettings.low,
-                //     scaleResolutionDownBy: getRoundedResolution(4.0),
-                //     maxFramerate: 24,
-                // },
-                // {
-                //     rid: 'mid',
-                //     maxBitrate: bitrateSettings.mid,
-                //     scaleResolutionDownBy: getRoundedResolution(2.0),
-                //     maxFramerate: 30,
-                // },
-                // {
-                //     rid: 'high',
-                //     maxBitrate: bitrateSettings.high,
-                //     scaleResolutionDownBy: getRoundedResolution(1),
-                //     maxFramerate: 30,
-                // }
+                {
+                    rid: 'low',
+                    maxBitrate: bitrateSettings.low,
+                    scaleResolutionDownBy: getRoundedResolution(4.0),
+                    maxFramerate: 24,
+                },
+                {
+                    rid: 'mid',
+                    maxBitrate: bitrateSettings.mid,
+                    scaleResolutionDownBy: getRoundedResolution(2.0),
+                    maxFramerate: 30,
+                },
+                {
+                    rid: 'high',
+                    maxBitrate: bitrateSettings.high,
+                    scaleResolutionDownBy: getRoundedResolution(1),
+                    maxFramerate: 30,
+                }
             ];
             const video_track = video_stream.getVideoTracks()[0];
             this.video_transceiver = this.pc.addTransceiver(video_track, {
                 direction: 'sendonly',
                 sendEncodings: encodings
             });
+            const codecs = RTCRtpSender.getCapabilities('video').codecs;
+            // Фильтруем, оставляя только VP8 или H.264 на первом месте
+            const preferredCodecs = codecs.filter(c => c.mimeType.toLowerCase() === 'video/vp8');
+            this.video_transceiver.setCodecPreferences(preferredCodecs);
         }
         if (audio_stream) {
             const audio_track = audio_stream.getAudioTracks()[0];

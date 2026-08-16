@@ -73,7 +73,7 @@ const handleBeforeUnload = (event) => {
 // Функция изменения параметров WebRTC сендера
 const applyNetworkProfile = async () => {
   try {
-    const video_sender = websocket.peer_connection.video_transceiver.sender;
+    const video_sender = websocket.webrtc_connection.publisher.video_transceiver.sender;
     if (!video_sender) return;
 
     const parameters = video_sender.getParameters();

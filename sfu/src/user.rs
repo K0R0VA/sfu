@@ -109,7 +109,6 @@ impl<C: SignalingClient, S: Storage> Actor for User<C, S> {
         self.subscriber.try_terminate().await.ok();
         self.publisher.try_terminate().await.ok();
         let _ = self.room.send(RoomMessage::Leave { peer_id: self.id.clone() }).await;
-        tracing::info!("🔴 [UserActor] Пользователь уничтожен.");
     }
 }
 
