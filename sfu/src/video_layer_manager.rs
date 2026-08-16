@@ -1,18 +1,17 @@
 use std::{collections::{HashMap}, sync::Arc};
+use rtc::{media_stream::MediaStreamTrack, rtcp::{payload_feedbacks::picture_loss_indication::PictureLossIndication, transport_feedbacks::transport_layer_nack::TransportLayerNack}, rtp_transceiver::{RTCRtpTransceiverDirection, RTCRtpTransceiverInit, rtp_sender::{RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind}}};
 use uuid::Uuid;
-use webrtc::{peer_connection::RTCPeerConnection, rtcp::{payload_feedbacks::picture_loss_indication::PictureLossIndication, transport_feedbacks::transport_layer_nack::TransportLayerNack}, rtp_transceiver::{RTCRtpTransceiverInit, rtp_codec::RTCRtpCodecCapability, rtp_sender::RTCRtpSender, rtp_transceiver_direction::RTCRtpTransceiverDirection}, track::track_local::track_local_static_rtp::TrackLocalStaticRTP};
+use webrtc::{media_stream::track_local::{TrackLocal, TrackLocalEvent, static_rtp::TrackLocalStaticRTP}, peer_connection::PeerConnection};
 
-use crate::{actor::{Actor, Addr, StoppingExt, WeakAddr}, error::Error, keyframe_interceptor::{KeyframeInterceptor, RequestKeyframe}, room::{Codec, StreamQuality}, rtp_packet_gateway_router::{RouterWaker, RtpPacketGatewayRouter, VideoRouterContext}, video_packet_forwarder::{VideoPacketForwarder, VideoPacketForwarderMessage}};
+use crate::{actor::{Actor, Addr, StoppingExt}, error::Error, keyframe_interceptor::{KeyframeInterceptor, RequestKeyframe}, room::{Codec, StreamQuality}, rtp_packet_gateway_router::{RouterWaker, RtpPacketGatewayRouter, VideoRouterContext}, video_packet_forwarder::{VideoPacketForwarder, VideoPacketForwarderMessage}};
 
 pub struct VideoLayerManager {
-    pub pc: Arc<RTCPeerConnection>,
     pub peer_id: Uuid,
     pub quality_layers: HashMap<StreamQuality, QualityLayer>,
-    pub active_track: Arc<RTCRtpSender>,
-    pub track: Arc<TrackLocalStaticRTP>,
-    pub packet_forwarder: WeakAddr<VideoPacketForwarder>,
+    pub packet_forwarder: Addr<VideoPacketForwarder>,
     pub connection_quality: StreamQuality,
     pub active_quality: Option<StreamQuality>,
+    pub track: Arc<dyn TrackLocal>
 }
 
 #[derive(Clone)]
@@ -24,7 +23,7 @@ pub struct QualityLayer {
 
 impl VideoLayerManager {
     pub async fn new(
-        pc: Arc<RTCPeerConnection>, 
+        pc: &Box<dyn PeerConnection>, 
         peer_id: Uuid, 
         codec: Codec, 
         current_connection_quality: StreamQuality,
@@ -32,23 +31,52 @@ impl VideoLayerManager {
         quality_layer: QualityLayer,
     ) -> Result<Self, Error> {
         let mut quality_layers = HashMap::new();
-        let track: Arc<TrackLocalStaticRTP> = Arc::new(TrackLocalStaticRTP::new(
-            RTCRtpCodecCapability {
-                mime_type: codec.to_string(),
+        let stream_id = format!("video_{peer_id}");
+        let ssrc = rand::random();
+        let track = MediaStreamTrack::new(
+                stream_id.clone(),  
+                stream_id.clone(),
+            "Webcam".to_string(),
+            RtpCodecKind::Video,
+            vec![RTCRtpEncodingParameters {
+                rtp_coding_parameters: RTCRtpCodingParameters {
+                    ssrc: Some(ssrc),
+                    ..Default::default()
+                },
+                codec: RTCRtpCodec {
+                    mime_type: codec.to_string(),
+                    ..Default::default()
+                },
                 ..Default::default()
-            },
-            format!("video_{peer_id}"),
-            format!("video_{peer_id}")
-        ));
-        let active_track = pc.add_transceiver_from_track(
-                track.clone() as Arc<_>,
-                Some(RTCRtpTransceiverInit { direction: RTCRtpTransceiverDirection::Sendonly, send_encodings: vec![] })
-            )
-            .await?
-            .sender()
-            .await;
+            }],
+        );
+        let output_track= Arc::new(TrackLocalStaticRTP::new(track));
+        pc.add_transceiver_from_track(output_track.clone(), Some(RTCRtpTransceiverInit { 
+            direction: RTCRtpTransceiverDirection::Sendonly, 
+            streams: vec![stream_id], 
+            send_encodings: vec![RTCRtpEncodingParameters {
+                rtp_coding_parameters: RTCRtpCodingParameters {
+                    ssrc: Some(ssrc),
+                    ..Default::default()
+                },
+                codec: RTCRtpCodec {
+                    mime_type: codec.to_string(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }] 
+        })).await?;
+        let packet_forwarder = VideoPacketForwarder::new(output_track.clone(), ssrc)
+            .start_with_capacity(2048);
         quality_layers.insert(quality, quality_layer);
-        let this = Self { pc, peer_id, track, quality_layers, active_track, active_quality: None, connection_quality: current_connection_quality, packet_forwarder: WeakAddr::default(),};
+        let this = Self { 
+            peer_id, 
+            quality_layers, 
+            active_quality: None, 
+            connection_quality: current_connection_quality, 
+            packet_forwarder,
+            track: output_track,
+        };
         Ok(this) 
     }
     fn spawn_notify_task(&self, addr: Addr<Self>, quality: StreamQuality, router_waker: RouterWaker ) {
@@ -67,12 +95,12 @@ impl VideoLayerManager {
 
 pub enum VideoLayerManagerMessage {
     AddLayer { quality: StreamQuality, layer: QualityLayer },
+    ForcePli,
     SwitchQualityLayer { to: StreamQuality },
     FallbackToLowQuality,
     LayerAwake { quality: StreamQuality },
     ResumeStreaming,
     Drop,
-    ForcePli
 }
 
 
@@ -80,9 +108,14 @@ impl Actor for VideoLayerManager {
     type Message = VideoLayerManagerMessage;
     async fn handle(&mut self, ctx: &mut crate::actor::Ctx<'_, Self>, m: Self::Message) {
         match m {
+            VideoLayerManagerMessage::ForcePli => 
+            if let Some(layer) = self.quality_layers.get(&self.active_quality.unwrap_or(self.connection_quality)) {
+                layer.keyframe_interceptor.send(RequestKeyframe::Pli).await.ok_or_terminate(ctx);
+            }
             VideoLayerManagerMessage::AddLayer { quality, layer } => {
                 self.quality_layers.insert(quality, layer.clone());
                 self.spawn_notify_task(ctx.addr.clone(), quality, layer.router_waker);
+                tracing::info!("{:?}", self.connection_quality);
                 if quality == self.connection_quality {
                     let message = VideoPacketForwarderMessage::LayerSwitched {
                         quality,
@@ -90,18 +123,13 @@ impl Actor for VideoLayerManager {
                     };
                     self.active_quality = Some(quality);
                     self.packet_forwarder
-                        .try_send(message)
+                        .send(message)
                         .await
                         .ok_or_terminate(ctx);
                 }
             }
             VideoLayerManagerMessage::ResumeStreaming =>  {
-                self.packet_forwarder.try_send(VideoPacketForwarderMessage::Reset).await.ok_or_terminate(ctx);
-            }
-            VideoLayerManagerMessage::ForcePli => {
-                let Some(active_quality) = self.active_quality else { return ; };
-                let Some(layer) = self.quality_layers.get(&active_quality) else { return ; }; 
-                layer.keyframe_interceptor.send(RequestKeyframe::Pli).await.ok_or_terminate(ctx);
+                self.packet_forwarder.send(VideoPacketForwarderMessage::Reset).await.ok_or_terminate(ctx);
             }
             VideoLayerManagerMessage::SwitchQualityLayer { to  } => {
                 if Some(to) == self.active_quality {
@@ -112,7 +140,7 @@ impl Actor for VideoLayerManager {
                 self.active_quality = Some(to);
                 self.connection_quality = to;
                 self.packet_forwarder
-                    .try_send(VideoPacketForwarderMessage::LayerSwitched {
+                    .send(VideoPacketForwarderMessage::LayerSwitched {
                         quality: to,
                         gateway_router: layer.gateway_router.clone()
                     })
@@ -123,7 +151,7 @@ impl Actor for VideoLayerManager {
                 if let Some(layer) = self.quality_layers.get(&StreamQuality::Low) {
                 self.active_quality = Some(StreamQuality::Low);
                 self.packet_forwarder
-                    .try_send(VideoPacketForwarderMessage::LayerSwitched {
+                    .send(VideoPacketForwarderMessage::LayerSwitched {
                         quality: StreamQuality::Low,
                         gateway_router: layer.gateway_router.clone()
                     })
@@ -136,7 +164,7 @@ impl Actor for VideoLayerManager {
                 let Some(layer) = self.quality_layers.get(&quality) else { return ; };
                 self.active_quality = Some(quality);
                 self.packet_forwarder
-                    .try_send(VideoPacketForwarderMessage::LayerSwitched {
+                    .send(VideoPacketForwarderMessage::LayerSwitched {
                         quality,
                         gateway_router: layer.gateway_router.clone()
                     })
@@ -148,16 +176,11 @@ impl Actor for VideoLayerManager {
     }
 
     async fn starting(&mut self, ctx: &crate::actor::Ctx<'_, Self>) {
-        let active_track = self.active_track.clone();
+        let track = self.track.clone();
         let addr = ctx.addr.clone();
-        let packet_forwarder = VideoPacketForwarder::new(self.track.clone(), addr.clone())
-            .start_with_capacity(2048);
-        let forwarder = packet_forwarder.clone();
-        self.packet_forwarder.set_addr(packet_forwarder);
+        let forwarder = self.packet_forwarder.clone();
         tokio::spawn(async move {
-            loop {
-                let mut rtcp_buf = [0u8; 1500];
-                let Ok((packets, _)) = active_track.read(&mut rtcp_buf).await else { break; };
+            while let Some(TrackLocalEvent::OnRtcpPacket(packets)) = track.poll().await {
                 for packet in packets {
                     if packet.as_any().downcast_ref::<PictureLossIndication>().is_some() {
                         let result = addr.send(VideoLayerManagerMessage::ForcePli).await;
@@ -180,7 +203,7 @@ impl Actor for VideoLayerManager {
                         };
                     }
                 }
-            }
+            };
         });
         let addr = ctx.addr.clone();
         if let Some((quality, layer)) = self.quality_layers.iter().next() {
@@ -188,18 +211,14 @@ impl Actor for VideoLayerManager {
             self.spawn_notify_task(addr.clone(), *quality, wake_notification);
             self.active_quality = Some(*quality);
             let _ = self.packet_forwarder
-                        .try_send(VideoPacketForwarderMessage::Start {
+                        .send(VideoPacketForwarderMessage::Start {
                             quality: *quality,
                             gateway_router: layer.gateway_router.clone()
                         })
                         .await;
         } 
     }
-    async fn stopping(mut self, _: &crate::actor::Ctx<'_, Self>) {
-        self.packet_forwarder.try_terminate().await.ok();
-        self.quality_layers.clear();
-        if let Err(e) = self.pc.remove_track(&self.active_track).await {
-            tracing::error!("[VideoSubscription] remove_track {e}");
-        }
+    async fn stopping(self, _: &crate::actor::Ctx<'_, Self>) {
+        self.packet_forwarder.terminate().await.ok();
     }
 }

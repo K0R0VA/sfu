@@ -3,7 +3,6 @@ use std::{collections::HashSet, fs::File, io::BufReader, str::FromStr, sync::{Ar
 use sfu::{Storage, StorageConfiguration, SignalingClient, create_peer, error::Error, user::{IceCandidate, SignalMessage, Target}};
 use tokio::{io::AsyncWriteExt, sync::Mutex};
 use uuid::Uuid;
-use webrtc::{ice_transport::ice_candidate::RTCIceCandidateInit, media::{Sample, io::ivf_reader::{ IVFReader}}, peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription}, rtp_transceiver::{RTCRtpTransceiverInit, rtp_codec::RTCRtpCodecCapability, rtp_transceiver_direction::RTCRtpTransceiverDirection}, track::track_local::track_local_static_sample::TrackLocalStaticSample
 };
 
 #[cfg(test)]

@@ -1,58 +1,36 @@
-use std::{sync::Arc, time::{Instant}};
-use webrtc::{rtp::{packet::Packet}, track::track_local::{TrackLocalWriter, track_local_static_rtp::TrackLocalStaticRTP}};
-use crate::{actor::{Actor, Addr, Ctx, StoppingExt}, error::Error, room::StreamQuality, rtp_packet_gateway_router::{RtpPacketGatewayRouter, RtpPacketGatewayRouterMessage, RtpPacketMessage, VideoRouterContext}, video_layer_manager::{VideoLayerManager, VideoLayerManagerMessage}};
+use std::{sync::Arc, time::Instant};
+use rtc::rtp::Packet;
+use webrtc::media_stream::track_local::{TrackLocal};
+
+use crate::{actor::{Actor, Addr, Ctx, StoppingExt}, room::StreamQuality, rtp_packet_gateway_router::{RtpPacketGatewayRouter, RtpPacketGatewayRouterMessage, RtpPacketMessage, VideoRouterContext}, video_layer_manager::{VideoLayerManager, VideoLayerManagerMessage}};
 
 pub struct VideoPacketForwarder {
-    track: Arc<TrackLocalStaticRTP>,
-    video_layer_manager: Addr<VideoLayerManager>,
+    track: Arc<dyn TrackLocal>,
     current_quality: Option<StreamQuality>,
     current_channel: Option<Addr<RtpPacketGatewayRouter<Self, VideoRouterContext>>>,
     pending_channel: Option<Addr<RtpPacketGatewayRouter<Self, VideoRouterContext>>>,
-    rtp_packet_cache: RtpPacketCache,
     start_instant: Instant,
+    ssrc: u32,
     last_packet_time: Instant,
     current_generated_ts: u32,
     last_sequence_number: u16,
     is_layer_switching: bool,
 }
-pub struct RtpPacketCache {
-    inner: Box<[Option<Packet>; u16::MAX as usize + 1]>
-}
 
-impl Default for RtpPacketCache {
-    fn default() -> Self {
-        let cache = vec![None; u16::MAX as usize + 1];
-        let inner = cache.into_boxed_slice().try_into().unwrap();
-        Self {
-            inner,
-        }
-    }
-}
-
-impl RtpPacketCache {
-    fn get(&self, index: u16) -> Option<&Packet> {
-        self.inner[index as usize].as_ref()
-    }
-    fn insert(&mut self, packet: Packet) {
-        let index = packet.header.sequence_number as usize;
-        self.inner[index] = Some(packet);
-    }
-}
 
 impl VideoPacketForwarder {
-    pub fn new(track: Arc<TrackLocalStaticRTP>, video_layer_manager: Addr<VideoLayerManager>) -> Self {
+    pub fn new(track: Arc<dyn TrackLocal>, ssrc: u32,) -> Self {
         Self {
             track,
             last_sequence_number: 0,
-            rtp_packet_cache: RtpPacketCache::default(),
             is_layer_switching: false, 
             start_instant: Instant::now(),
             last_packet_time: Instant::now(),
             current_generated_ts: 0,
+            ssrc,
             current_quality: None,
             current_channel: None,
             pending_channel: None,
-            video_layer_manager,
         }
     }
 }
@@ -92,25 +70,17 @@ impl VideoPacketForwarder {
             self.write_packet(packet).await;
         }
     }
-    async fn handle_missed_packets(&mut self, missing_packets: Vec<u16>) -> Result<(), Error> {
-        for packet_number in missing_packets {
-            if let Some(packet) = self.rtp_packet_cache.get(packet_number) {
-                self.track.write_rtp(&packet).await?;
-            }
-        }
-        Ok(())
-    }
     async fn write_packet(&mut self, packet: Packet)  {
-        match self.track.write_rtp(&packet).await {
+        match self.track.write_rtp(packet).await {
             Ok(_) => {},
             Err(e) => {
-                tracing::warn!("{e}");
+                tracing::error!("{e}");
             } 
         }
-        self.rtp_packet_cache.insert(packet);
     }
     fn modify_header(&mut self, packet: &mut Packet) {
         self.last_sequence_number = self.last_sequence_number.wrapping_add(1);
+        packet.header.ssrc = self.ssrc;
         packet.header.sequence_number = self.last_sequence_number;
         packet.header.timestamp = self.current_generated_ts;
         if packet.header.marker {
@@ -148,19 +118,19 @@ impl Actor for VideoPacketForwarder {
                 forwarder.do_send(RtpPacketGatewayRouterMessage::Subscribe(ctx.addr.clone())).ok_or_terminate(ctx);
                 self.current_channel = Some(forwarder);
             }
-            VideoPacketForwarderMessage::RtpPacket {packet, quality} => {
+            VideoPacketForwarderMessage::RtpPacket { packet, quality} => {
                 self.forward(ctx, quality, packet).await;
                 self.last_packet_time = Instant::now();
             },
             VideoPacketForwarderMessage::Timeout => {
                 let message= VideoLayerManagerMessage::FallbackToLowQuality;
-                self.video_layer_manager
-                    .send(message)
-                    .await
-                    .ok_or_terminate(ctx);
+                // self.video_layer_manager
+                //     .send(message)
+                //     .await
+                //     .ok_or_terminate(ctx);
             }
             VideoPacketForwarderMessage::MissedPackets(missed_packets) => { 
-                self.handle_missed_packets(missed_packets).await.ok_or_terminate(ctx);
+                // self.handle_missed_packets(missed_packets).await.ok_or_terminate(ctx);
             }
         }
     }

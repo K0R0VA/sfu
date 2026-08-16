@@ -1,46 +1,65 @@
 use std::sync::Arc;
 
-use webrtc::{peer_connection::RTCPeerConnection, rtp::packet::Packet, rtp_transceiver::{RTCRtpTransceiverInit, rtp_codec::RTCRtpCodecCapability, rtp_sender::RTCRtpSender, rtp_transceiver_direction::RTCRtpTransceiverDirection}, track::track_local::{TrackLocalWriter, track_local_static_rtp::TrackLocalStaticRTP}};
+use rtc::{media_stream::MediaStreamTrack, rtp::Packet, rtp_transceiver::{RTCRtpTransceiverDirection, RTCRtpTransceiverInit, rtp_sender::{RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind}}};
+use webrtc::{media_stream::track_local::{TrackLocal, static_rtp::TrackLocalStaticRTP}, peer_connection::{PeerConnection, RTCPeerConnection}};
 
 use crate::{actor::{Actor, Addr}, error::Error, rtp_packet_gateway_router::{AudioRouterContext, RtpPacketGatewayRouter, RtpPacketGatewayRouterMessage, RtpPacketMessage}, user::ConnectionRequest};
 
 pub struct AudioPacketForwarder {
-    pub track: Arc<TrackLocalStaticRTP>,
-    pub sender: Arc<RTCRtpSender>,
+    pub track: Arc<dyn TrackLocal>,
+    pub ssrc: u32,
     pub router: Addr<RtpPacketGatewayRouter<Self, AudioRouterContext>>
 }
 
 impl AudioPacketForwarder {
-    pub async fn init(pc: Arc<RTCPeerConnection>, request: ConnectionRequest<AudioPacketForwarder, AudioRouterContext>) -> Result<Self, Error> {
+    pub async fn init(pc: &Box<dyn PeerConnection>, request: ConnectionRequest<AudioPacketForwarder, AudioRouterContext>) -> Result<Self, Error> {
         let ConnectionRequest {
-            codec_mime_type,
             peer_id,
+            codec_mime_type,
             gateway_router,
             ..
         } = request;
-        let output_track: Arc<TrackLocalStaticRTP> = Arc::new(TrackLocalStaticRTP::new(
-            RTCRtpCodecCapability {
-                mime_type: codec_mime_type.to_string(),
+        let stream_id = format!("audio_{peer_id}");
+        let ssrc = rand::random();
+        let track = MediaStreamTrack::new(
+                stream_id.clone(),  
+                stream_id.clone(),
+            "Microphone".to_string(),
+            RtpCodecKind::Audio,
+            vec![RTCRtpEncodingParameters {
+                rtp_coding_parameters: RTCRtpCodingParameters {
+                    ssrc: Some(ssrc),
+                    ..Default::default()
+                },
+                codec: RTCRtpCodec {
+                    mime_type: codec_mime_type.to_string(),
+                    ..Default::default()
+                },
                 ..Default::default()
-            },
-            format!("audio_{peer_id}"),
-            format!("audio_{peer_id}")
-        ));
-        let tranceiver = pc
-            .add_transceiver_from_track(
-                output_track.clone() as Arc<_>,
-                Some(RTCRtpTransceiverInit {
-                    direction: RTCRtpTransceiverDirection::Sendonly,
-                    send_encodings: vec![],
-                }),
-            )
-            .await?;
-        let sender = tranceiver.sender().await;
-        let forwarder = Self { track: output_track, sender, router: gateway_router };
+            }],
+        );
+        let output_track= Arc::new(TrackLocalStaticRTP::new(track));
+        pc.add_transceiver_from_track(output_track.clone(), Some(RTCRtpTransceiverInit { 
+            direction: RTCRtpTransceiverDirection::Sendonly, 
+            streams: vec![stream_id], 
+            send_encodings: vec![RTCRtpEncodingParameters {
+                rtp_coding_parameters: RTCRtpCodingParameters {
+                    ssrc: Some(ssrc),
+                    ..Default::default()
+                },
+                codec: RTCRtpCodec {
+                    mime_type: codec_mime_type.to_string(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }] 
+        })).await?;
+        let forwarder = Self { track: output_track, router: gateway_router, ssrc };
         Ok(forwarder)
     }
-    async fn forward(&self, r: Packet) -> Result<(), Error> {
-        self.track.write_rtp(&r).await?;
+    async fn forward(&self, mut r: Packet) -> Result<(), Error> {
+        r.header.ssrc = self.ssrc;
+        self.track.write_rtp(r).await?;
         Ok(())
     }
 }

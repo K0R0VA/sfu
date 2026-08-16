@@ -11,74 +11,52 @@ pub mod rtp_packet_gateway_router;
 pub mod subscriber;
 pub mod publisher;
 pub mod server;
+pub mod simulcast_manager;
+use std::collections::VecDeque;
 use std::fmt::Debug;
-use std::time::Duration;
+use std::sync::Arc;
 use chrono::{DateTime, Utc};
+use rtc::interceptor::Registry;
+use rtc::rtp_transceiver::RTCRtpTransceiverDirection;
+use rtc::rtp_transceiver::rtp_sender::{RTCRtpHeaderExtensionCapability, RtpCodecKind};
 use uuid::Uuid;
-use webrtc::api::APIBuilder;
-use webrtc::api::interceptor_registry::register_default_interceptors;
-use webrtc::api::media_engine::MediaEngine;
-use webrtc::api::setting_engine::SettingEngine;
-use webrtc::ice_transport::ice_connection_state::RTCIceConnectionState;
-use webrtc::ice_transport::ice_server::RTCIceServer;
-use webrtc::interceptor::registry::Registry;
-use webrtc::peer_connection::RTCPeerConnection;
-use webrtc::peer_connection::configuration::RTCConfiguration;
-use webrtc::rtp::packet::Packet;
-use webrtc::rtp_transceiver::rtp_codec::{RTCRtpHeaderExtensionCapability, RTPCodecType};
-use crate::actor::{Actor, Addr};
+use webrtc::peer_connection::{MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, RTCConfigurationBuilder, RTCIceServer, register_default_interceptors};
+use webrtc::runtime::TokioRuntime;
 use crate::error::Error;
-use crate::user::{SignalMessage, Target};
+use crate::user::{SignalMessage};
 
 
-pub type PacketSender = tokio::sync::broadcast::Sender<Packet>;
-
-pub async fn create_peer() -> Result<RTCPeerConnection, Error> {
+pub async fn create_peer(handler: impl PeerConnectionEventHandler, direction: RTCRtpTransceiverDirection) -> Result<Box<dyn PeerConnection>, Error> {
     let mut m = MediaEngine::default();
+    m.register_default_codecs()?;
     for uri in [
         "urn:ietf:params:rtp-hdrext:sdes:mid",
         "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id",
         "urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id",
     ] {
         m.register_header_extension(
-            RTCRtpHeaderExtensionCapability {
-                uri: uri.to_owned(),
-            },
-                RTPCodecType::Video,
-            None,
+            RTCRtpHeaderExtensionCapability { uri: uri.to_owned() },
+            RtpCodecKind::Video,
+            Some(direction),
         )?;
     }
-
-    m.register_default_codecs()?;
-    
-// Регистрируем этот кодек на прием и на отправку
-
     let registry = register_default_interceptors(Registry::new(), &mut m)?;
-    let mut system_engine = SettingEngine::default();
-    system_engine
-        .set_interface_filter(
-            Box::new(|iface|{
-                !iface.starts_with("docker") && !iface.starts_with("br-") && !iface.starts_with("veth")
-            })
-        );
-    let api = APIBuilder::new()
+    let config = RTCConfigurationBuilder::default()
+        .with_ice_servers(vec![RTCIceServer {
+            urls: vec!["stun:stun.bluesip.net:3478".to_owned()],
+            ..Default::default()
+        }])
+        .build();
+    let pc = PeerConnectionBuilder::new()
         .with_media_engine(m)
         .with_interceptor_registry(registry)
-        .with_setting_engine(system_engine)
-        .build();
-    let config = RTCConfiguration {
-        ice_servers: vec![
-            RTCIceServer {
-                urls: vec![
-                    "stun:stun.l.google.com:19302".to_string(),
-                ],
-                ..Default::default()
-            }
-        ],
-        ..Default::default()
-    };
-    let peer = api.new_peer_connection(config.clone()).await?;
-    Ok(peer)
+        .with_configuration(config)
+        .with_runtime(Arc::new(TokioRuntime))
+        .with_handler(Arc::new(handler))
+        .with_udp_addrs(vec!["0.0.0.0:0"])
+        .build()
+        .await?;
+    Ok(Box::new(pc))
 }
 
 pub trait SignalingClient: Send + 'static {
@@ -105,69 +83,24 @@ pub struct StorageItem<'a> {
     pub connection_id: Uuid
 }
 
-pub trait IceRestartExt: Actor where Self::Message: From<RTCIceConnectionState> {
-    const TARGET: Target;
-    const CHECK_ICE_STATE: Self::Message;
-    fn peer_connection(&self) -> &RTCPeerConnection;
-    fn send_target_message(&self, message: SignalMessage) -> impl Future<Output = Result<(), Error>>;
-    fn on_reconnect(&self) -> impl Future<Output = Result<(), Error>>;
-    fn retry_connect_attempts(&mut self) -> &mut u8;
-    fn disconnected(&mut self) -> &mut bool;
-    fn on_ice_connection_state_change(&self, addr: Addr<Self>) {
-        let pc = self.peer_connection();
-        pc.on_ice_connection_state_change(Box::new({
-            let addr = addr.clone();
-            move |state| {
-                let addr = addr.clone();
-                Box::pin(async move {
-                    let _ = addr.send(state.into()).await;
-                })
-            }
-        }));
-    }
-    #[allow(async_fn_in_trait)]
-    async fn handle_ice_state_change(&mut self, addr: &Addr<Self>, state: RTCIceConnectionState) -> Result<(), Error> {
-        match state {
-            RTCIceConnectionState::Failed => {
-                *self.disconnected() = true;
-                *self.retry_connect_attempts() += 1;
-                addr.send(Self::CHECK_ICE_STATE).await?;
-            },
-            RTCIceConnectionState::Disconnected => {
-                *self.disconnected() = true;
-            }
-            RTCIceConnectionState::Connected if *self.disconnected() => {
-                self.on_reconnect().await?;    
-                *self.disconnected() = false;
-                *self.retry_connect_attempts() = 0;
-            },
-            _ => {}
-        }
-        Ok(())
-    }
-    #[allow(async_fn_in_trait)]
-    async fn check_ice_state(&mut self, ctx: &mut actor::Ctx<'_, Self>) -> Result<(), Error> {
-        let current_state = self.peer_connection().ice_connection_state();
-        if current_state == RTCIceConnectionState::Failed {
-            if *self.retry_connect_attempts() < 5 {
-                let addr = ctx.addr.clone();
-                tokio::spawn(async move {
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                    let _ = addr.send(current_state.into()).await;
-                });
-            } else {
-                self.stop(ctx).await;
-            }
-        }
-        Ok(())
-    }
-}
-
-#[derive(Default, Debug)]
+#[derive(Debug, Default)]
 pub struct CurrentStats {
-    packet_loss: f64,
-    bitrate_bps: u64,
-    last_packets_received: u64,
-    last_bytes_received: u64,
-    last_nack_count: u64,
+    // Метрики потерь
+    pub packets_received: u64,
+    pub packets_lost: u64,
+    pub loss_rate: f64, // процент потерь за последний интервал
+    
+    // Метрики качества видео
+    pub frames_decoded: u32,
+    pub frames_dropped: u32,
+    pub avg_qp: Option<f64>,
+    pub jitter: f64, // из RTCReceivedRtpStreamStats
+    
+    // Метрики стабильности
+    pub freeze_count: u32,
+    pub total_freezes_duration: f64,
+    pub concealment_events: u64,
+    
+    // История для анализа трендов (опционально)
+    pub loss_history: VecDeque<f64>, // последние N значений потерь
 }

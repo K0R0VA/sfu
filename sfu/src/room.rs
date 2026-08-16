@@ -27,13 +27,13 @@ pub struct Peer<C: SignalingClient, S: Storage> {
 #[derive(Clone)]
 pub struct AudioRouterStream {
     pub router: AudioRouter,
-    pub codek: Codec
+    pub codec: Codec
 }
 
 #[derive(Clone)]
 pub struct VideoRouterStream {
     pub router: VideoRouter,
-    pub codek: Codec,
+    pub codec: Codec,
     pub keyframe_interceptor: Addr<KeyframeInterceptor>,
     pub wake_tx: RouterWaker,
 }
@@ -180,7 +180,7 @@ impl<C: SignalingClient, S: Storage> Room<C, S> {
             let _ = user.send(UserMessage::ConnectAudio(ConnectionRequest { 
                 peer_id, 
                 gateway_router: stream.router.clone(), 
-                codec_mime_type: stream.codek.clone()
+                codec_mime_type: stream.codec.clone()
             })).await;
         }
     }
@@ -195,7 +195,7 @@ impl<C: SignalingClient, S: Storage> Room<C, S> {
                 request: ConnectionRequest { 
                     peer_id, 
                     gateway_router: video_router_stream.router.clone(), 
-                    codec_mime_type: video_router_stream.codek.clone(),
+                    codec_mime_type: video_router_stream.codec.clone(),
                 },
                 keyframe_interceptor: video_router_stream.keyframe_interceptor.clone(),
                 wake_notification: video_router_stream.wake_tx.clone()
@@ -209,7 +209,7 @@ impl<C: SignalingClient, S: Storage> Room<C, S> {
         for (existed_peer_id, Peer { audio_steam: audio_stream, video_streams, .. }) in stream {
             if let Some(audio_stream) = audio_stream {
                 let _ = user.send(UserMessage::ConnectAudio(ConnectionRequest {
-                    codec_mime_type: audio_stream.codek.clone(),
+                    codec_mime_type: audio_stream.codec.clone(),
                     peer_id: *existed_peer_id,
                     gateway_router: audio_stream.router.clone()
                 })).await;
@@ -218,7 +218,7 @@ impl<C: SignalingClient, S: Storage> Room<C, S> {
                 let _ = user.send(UserMessage::ConnectVideo {
                     quality: *quality,
                     request: ConnectionRequest {
-                        codec_mime_type: stream.codek.clone(),
+                        codec_mime_type: stream.codec.clone(),
                         peer_id: *existed_peer_id,
                         gateway_router: stream.router.clone()
                     },

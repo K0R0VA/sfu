@@ -7,7 +7,7 @@ pub enum Error {
     #[error(transparent)]
     Json(#[from] serde_json::Error),
     #[error(transparent)]
-    WebRtc(#[from] webrtc::Error),
+    WebRtc(#[from] webrtc::error::Error),
     #[error(transparent)]
     Broadcast(#[from] RecvError),
     #[error(transparent)]

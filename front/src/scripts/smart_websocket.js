@@ -59,4 +59,8 @@ export class SmartWebSocket {
     on_message(f) {
         this.ws.onmessage = f;
     }
+    close() {
+        this.ws.close();
+        this.ws = null;
+    }
 }

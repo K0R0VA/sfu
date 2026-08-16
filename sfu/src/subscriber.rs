@@ -1,24 +1,27 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap};
+use rtc::{peer_connection::RTCPeerConnection, rtp_transceiver::RTCRtpTransceiverDirection};
+use tokio::sync::mpsc::Receiver;
 use uuid::Uuid;
-use webrtc::{ice_transport::{ice_candidate::RTCIceCandidateInit, ice_connection_state::RTCIceConnectionState}, peer_connection::{RTCPeerConnection, sdp::session_description::RTCSessionDescription, signaling_state::RTCSignalingState}};
-use crate::{IceRestartExt, Storage, SignalingClient, actor::{Actor, Addr, Ctx, StoppingExt}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, keyframe_interceptor::KeyframeInterceptor, room::StreamQuality, rtp_packet_gateway_router::{AudioRouterContext, RouterWaker, VideoRouterContext}, user::{ConnectionRequest, IceCandidate, MessageType, SignalMessage, Target, User, UserMessage}, video_layer_manager::{QualityLayer, VideoLayerManager, VideoLayerManagerMessage}, video_packet_forwarder::VideoPacketForwarder};
+use webrtc::peer_connection::{PeerConnection, PeerConnectionEventHandler, RTCIceCandidateInit, RTCPeerConnectionIceEvent, RTCSessionDescription};
+use crate::{SignalingClient, Storage, actor::{Actor, Addr, Ctx, StoppingExt}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, keyframe_interceptor::KeyframeInterceptor, room::StreamQuality, rtp_packet_gateway_router::{AudioRouterContext, RouterWaker, VideoRouterContext}, subscriber::SubscriberMessage::OnNegotiationNeeded, user::{ConnectionRequest, IceCandidate, MessageType, SignalMessage, Target, User, UserMessage}, video_layer_manager::{QualityLayer, VideoLayerManager, VideoLayerManagerMessage}, video_packet_forwarder::VideoPacketForwarder};
 
 pub struct Subscriber<C: SignalingClient, S: Storage> {
     pub user: Addr<User<C, S>>,
-    pub pc: Arc<RTCPeerConnection>,
+    pub pc: Box<dyn PeerConnection>,
     pub audio_subscriptions: HashMap<Uuid, Addr<AudioPacketForwarder>>,
     pub video_subscriptions: HashMap<Uuid, Addr<VideoLayerManager>>,
     pub current_quality: StreamQuality,
     pub disconnected: bool,
     pub retry_connect_attempts: u8,
+    pub rx: Option<Receiver<SubscriberMessage>>,
 }
 
 const TARGET: Target = Target::Subscriber;
 
 impl<C: SignalingClient, S: Storage> Subscriber<C, S> {
     pub async fn new(user: Addr<User<C, S>>) -> Result<Self, Error> {
-        let pc = create_peer().await?;
-        let pc = Arc::new(pc);
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let pc = create_peer(SubscriberPeerConnectionHandler {tx}, RTCRtpTransceiverDirection::Recvonly).await?;
         Ok(Self {
             user,
             pc,
@@ -27,19 +30,13 @@ impl<C: SignalingClient, S: Storage> Subscriber<C, S> {
             disconnected: false,
             retry_connect_attempts: 0,
             current_quality: StreamQuality::High,
+            rx: Some(rx)
         })
     }
 }
 
 pub enum SubscriberMessage {
     SwitchQualityLayer { quality: StreamQuality },
-    CheckIceState,
-    Signal {
-        offer: String
-    },
-    IceStateChange {
-        state: RTCIceConnectionState,
-    },
     IceCandidate { 
         candidate: IceCandidate,
     },
@@ -51,36 +48,19 @@ pub enum SubscriberMessage {
         keyframe_interceptor: Addr<KeyframeInterceptor>, 
         wake_notification: RouterWaker
     },
-    Unsubscribe { peer_id: Uuid }
-}
-
-impl From<RTCIceConnectionState> for SubscriberMessage {
-    fn from(value: RTCIceConnectionState) -> Self {
-        Self::IceStateChange { state: value }
-    }
+    Unsubscribe { peer_id: Uuid },
+    OnNegotiationNeeded
 }
 
 impl<C: SignalingClient, S: Storage> Actor for Subscriber<C, S> {
     type Message = SubscriberMessage;
     async fn handle(&mut self, ctx: &mut Ctx<'_, Self>, msg: Self::Message) {
         match msg {
-            SubscriberMessage::CheckIceState => { self.check_ice_state(ctx).await.ok_or_terminate(ctx); },
-            SubscriberMessage::IceStateChange { state } => {
-                let addr = ctx.addr.clone();
-                self.handle_ice_state_change(&addr, state).await.ok_or_terminate(ctx);
-            }
             SubscriberMessage::SwitchQualityLayer { quality } => {
                 self.current_quality = quality;
                 for subscription in self.video_subscriptions.values() {
                     subscription.send(VideoLayerManagerMessage::SwitchQualityLayer { to: quality }).await.ok_or_terminate(ctx);
                 }
-            }
-            SubscriberMessage::Signal { offer: sdp } => {
-                let message = SignalMessage::Rtc {
-                    target: TARGET,
-                    message_type: MessageType::Offer { sdp }
-                };
-                self.user.send(UserMessage::SignalMessage(message)).await.ok_or_terminate(ctx);
             }
             SubscriberMessage::IceCandidate { candidate } => {
                 let message = SignalMessage::Rtc {
@@ -93,53 +73,30 @@ impl<C: SignalingClient, S: Storage> Actor for Subscriber<C, S> {
                 self.handle_ws_message(message).await.ok_or_terminate(ctx);
             },
             SubscriberMessage::ConnectAudio(request) => {
+                tracing::info!("connect audio");
                 self.connect_audio(request).await.ok_or_terminate(ctx);
             },
             SubscriberMessage::ConnectVideo {quality, request, keyframe_interceptor, wake_notification} => {
+                tracing::info!("connect video");
                self.connect_video(quality, request, keyframe_interceptor, wake_notification).await.ok_or_terminate(ctx);
             },
             SubscriberMessage::Unsubscribe { peer_id: from } => {
                self.disconnect_from_user(from).await.ok_or_terminate(ctx);
             }
+            SubscriberMessage::OnNegotiationNeeded => {
+                self.send_offer().await.ok_or_terminate(ctx);
+            }
         }
     }   
     async fn starting(&mut self, ctx: &Ctx<'_, Self>) {
         let addr = ctx.addr.clone();
-        self.pc.on_ice_candidate(Box::new(move |candidate| {
-            let addr = addr.clone();
-            Box::pin(async move {
-                if let Some(cand) = candidate {
-                    if let Ok(RTCIceCandidateInit { candidate, sdp_mid, sdp_mline_index, .. }) = cand.to_json() {
-                        let _ = addr.send(SubscriberMessage::IceCandidate { candidate: IceCandidate { candidate, sdp_mid, sdp_mline_index } }).await;
-                    }
-                }
-            })
-        }));
-        let addr = ctx.addr.clone();
-        self.on_ice_connection_state_change(addr);
-        let addr = ctx.addr.clone();
-        let pc = Arc::clone(&self.pc);
-        self.pc.on_negotiation_needed(Box::new(move || {
-            let pc = Arc::clone(&pc);
-            let addr = addr.clone();
-            Box::pin(async move {
-                if pc.signaling_state() != RTCSignalingState::Stable {
-                    return;
-                }
-                match pc.create_offer(None).await {
-                    Ok(offer) => {
-                        if let Err(e) = pc.set_local_description(offer.clone()).await {
-                            tracing::error!("[User] set_local_description: {:?}", e);
-                            return;
-                        }
-                        let _ = addr.send(SubscriberMessage::Signal {
-                            offer: offer.sdp
-                        }).await;
-                    }
-                    Err(e) => tracing::error!("[User] create_offer: {:?}", e),
-                }
-            })
-        }));
+        let mut rx = self.rx.take().expect("rx should pe created in Subscriber::new");
+        tokio::spawn(async move {
+            while let Some(message) = rx.recv().await {
+                let result = addr.send(message).await;
+                if result.is_err() { break; }
+            }
+        });
     }
     async fn stopping(self, _: &Ctx<'_, Self>) {
         for sub in self.audio_subscriptions.values() {
@@ -186,9 +143,20 @@ impl<C: SignalingClient, S: Storage> Subscriber<C, S> {
         }
         Ok(())
     }
+    async fn send_offer(&mut self) -> Result<(), Error> {
+        tracing::info!("send_offer");
+        let offer = self.pc.create_offer(None).await?;
+        self.pc.set_local_description(offer.clone()).await?;
+        let message = SignalMessage::Rtc {
+            target: TARGET,
+            message_type: MessageType::Offer { sdp: offer.sdp }
+        };
+        self.user.send(UserMessage::SignalMessage(message)).await?;
+        Ok(())
+    }
     async fn connect_audio(&mut self, request: ConnectionRequest<AudioPacketForwarder, AudioRouterContext>) -> Result<(), Error> {
         let peer_id = request.peer_id;
-        let audio_subscription = AudioPacketForwarder::init(self.pc.clone(), request).await?;
+        let audio_subscription = AudioPacketForwarder::init(&self.pc, request).await?;
         let audio_subscription = audio_subscription.start();
         self.audio_subscriptions.insert(peer_id, audio_subscription);
         Ok(())
@@ -208,7 +176,7 @@ impl<C: SignalingClient, S: Storage> Subscriber<C, S> {
             },
             std::collections::hash_map::Entry::Vacant(v) => {
                 let video_subscription = VideoLayerManager::new(
-                    self.pc.clone(), 
+                    &mut self.pc, 
                     peer_id, 
                     request.codec_mime_type, 
                     self.current_quality,
@@ -232,26 +200,18 @@ impl<C: SignalingClient, S: Storage> Subscriber<C, S> {
     }
 }
 
-impl<C: SignalingClient, S: Storage> IceRestartExt for Subscriber<C, S> {
-    const CHECK_ICE_STATE: Self::Message = SubscriberMessage::CheckIceState;
-    const TARGET: Target = Target::Subscriber;
-    async fn on_reconnect(&self) -> Result<(), Error> {
-        for video_subscription in self.video_subscriptions.values() {
-            video_subscription.send(VideoLayerManagerMessage::ResumeStreaming).await?;
+pub struct SubscriberPeerConnectionHandler {
+    tx: tokio::sync::mpsc::Sender<SubscriberMessage>
+}
+
+#[async_trait::async_trait]
+impl PeerConnectionEventHandler for SubscriberPeerConnectionHandler {
+    async fn on_ice_candidate(&self, event: RTCPeerConnectionIceEvent) {
+        if let Ok(RTCIceCandidateInit { candidate, sdp_mid, sdp_mline_index, .. }) = event.candidate.to_json() {
+            let _ = self.tx.send(SubscriberMessage::IceCandidate { candidate: IceCandidate { candidate, sdp_mid, sdp_mline_index } }).await;
         }
-        Ok(())
     }
-    fn disconnected(&mut self) -> &mut bool {
-        &mut self.disconnected
-    }
-    fn peer_connection(&self) -> &RTCPeerConnection {
-        &self.pc
-    }
-    fn retry_connect_attempts(&mut self) -> &mut u8 {
-        &mut self.retry_connect_attempts
-    }
-    async fn send_target_message(&self, message: SignalMessage) -> Result<(), Error> {
-        self.user.send(UserMessage::SignalMessage(message)).await?;
-        Ok(())
+    async fn on_negotiation_needed(&self) {
+        let _ = self.tx.send(SubscriberMessage::OnNegotiationNeeded).await;
     }
 }

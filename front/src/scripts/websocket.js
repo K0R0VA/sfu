@@ -3,6 +3,7 @@ import { WebrtcConnection } from "./webrtc";
 
 export class UserWebsocket {
     constructor(users, room_id, room_status, room_name) {
+        console.log(room_id);
         this.ws = createWebSocket(room_id.value);
         this.webrtc_connection = new WebrtcConnection(users, this.ws);
         this.room_status = room_status;
@@ -19,7 +20,6 @@ export class UserWebsocket {
                 }
                 case 'welcome': {
                     this.peer_id = message.peer_id;
-                    this.ws.url = `${this.ws.url}&user_id=${this.peer_id}`;
                     this.room_status.value = "Получение медиапотока...";
                     const video_stream = await this.getMedia({ 
                         video: {
@@ -87,7 +87,7 @@ export class UserWebsocket {
     }
     disconnect() {
         try {
-            this.ws.ws.close();
+            this.ws.close();
             this.webrtc_connection.publisher.pc.close();
             this.webrtc_connection.subscriber.pc.close();
         }
@@ -104,11 +104,10 @@ export class UserWebsocket {
 
 function createWebSocket (room_id) {
     const hostname = window.location.hostname;
-    const device_type = getDeviceType();
     if (hostname === 'localhost') {
-        return new SmartWebSocket(`ws://${hostname}:8080/api/room/${room_id}?device=${device_type}`);
+        return new SmartWebSocket(`ws://${hostname}:8080/api/room/${room_id}`);
     } else {
-        return new SmartWebSocket(`wss://${hostname}/api/room/${room_id}?device=${device_type}`);
+        return new SmartWebSocket(`wss://${hostname}/api/room/${room_id}`);
     }
 };
 

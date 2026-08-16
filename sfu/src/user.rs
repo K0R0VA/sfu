@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use webrtc::{peer_connection::{RTCPeerConnection, offer_answer_options::RTCOfferOptions, },  };
-use crate::{Storage, SignalingClient, actor::{Actor, Addr, Ctx, StoppingExt, WeakAddr}, audio_packet_forwarder::AudioPacketForwarder, error::Error, keyframe_interceptor::KeyframeInterceptor, publisher::{Publisher, PublisherMessage}, quality_monitor::DeviceType, room::{Codec, Room, RoomMessage, StreamQuality}, rtp_packet_gateway_router::{AudioRouterContext, RouterContext, RouterWaker, RtpPacketGatewayRouter, RtpPacketMessage, VideoRouterContext}, subscriber::{Subscriber, SubscriberMessage}, video_packet_forwarder::VideoPacketForwarder};
+use crate::{Storage, SignalingClient, actor::{Actor, Addr, Ctx, StoppingExt, WeakAddr}, audio_packet_forwarder::AudioPacketForwarder, error::Error, keyframe_interceptor::KeyframeInterceptor, publisher::{Publisher, PublisherMessage}, room::{Codec, Room, RoomMessage, StreamQuality}, rtp_packet_gateway_router::{AudioRouterContext, RouterContext, RouterWaker, RtpPacketGatewayRouter, RtpPacketMessage, VideoRouterContext}, subscriber::{Subscriber, SubscriberMessage}, video_packet_forwarder::VideoPacketForwarder};
 
 
 pub struct User<C: SignalingClient, S: Storage> {
@@ -28,7 +27,6 @@ impl<C: SignalingClient, S: Storage> User<C, S> {
 }
 #[derive(Deserialize)]
 pub struct SessionParams {
-    pub device: DeviceType,
     pub user_id: Option<Uuid>,
 }
 
@@ -169,7 +167,7 @@ impl<C: SignalingClient, S: Storage> User<C, S> {
         let addr = ctx.addr.clone();
         let subscriber = Subscriber::new(addr.clone()).await?.start();
         self.subscriber.set_addr(subscriber);
-        let publisher = Publisher::new(addr.clone(),  self.room.clone(), self.id, self.session_params.device).await?.start();
+        let publisher = Publisher::new(addr.clone(),  self.room.clone(), self.id).await?.start();
         self.publisher.set_addr(publisher);
         self.send_welcome().await?;
         Ok(())
@@ -217,19 +215,4 @@ impl<C: SignalingClient, S: Storage> User<C, S> {
             .map_err(|e| Error::SystemError { message: e.to_string().into() })?;
         Ok(())
     }
-}
-
-pub async fn initiate_ice_restart(
-    pc: &RTCPeerConnection,
-    target: Target,
-) -> Result<SignalMessage, Error> {
-    let mut options = RTCOfferOptions::default();
-    options.ice_restart = true;
-    let offer = pc.create_offer(Some(options)).await?;
-    pc.set_local_description(offer.clone()).await?;
-    let message = SignalMessage::Rtc {
-        target, 
-        message_type: MessageType::IceRestart { sdp: offer.sdp } 
-    };
-    Ok(message)
 }
