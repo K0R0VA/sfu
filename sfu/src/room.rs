@@ -5,14 +5,12 @@ use uuid::Uuid;
 use crate::{Storage, SignalingClient, actor::{Actor, Addr, Ctx}, error::Error, keyframe_interceptor::KeyframeInterceptor, rtp_packet_gateway_router::{AudioRouter, RouterWaker, VideoRouter}, user::{ConnectionRequest, User, UserMessage}};
 
 pub struct Room<C: SignalingClient, S: Storage> {
-    pub id: Uuid,
     peers: HashMap<Uuid, Peer<C, S>>
 }
 
 impl<C: SignalingClient, S: Storage> Room<C, S> {
     pub fn new() -> Self {
         Self {
-            id: Uuid::new_v4(),
             peers: HashMap::new()
         }
     }
