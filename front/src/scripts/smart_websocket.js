@@ -35,7 +35,7 @@ export class SmartWebSocket {
     }
 
     reconnect() {
-        if (this.isAlive) return;
+        if (this.isAlive || this.reconnectAttempts < 5) return;
 
         this.reconnectAttempts++;
         // Экспоненциальная задержка: 1с, 2с, 4с, 8с, далее каждые 10с

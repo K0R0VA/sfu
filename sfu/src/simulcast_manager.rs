@@ -25,7 +25,6 @@ impl<C: SignalingClient, S: Storage> SimulcastManager<C, S> {
     }
     async fn handle_new_layer(&mut self, ssrc: u32, rid: Option<String>) -> Result<(), Error> {
         let quality = StreamQuality::from_str(rid.as_deref().unwrap_or("high"))?;
-        tracing::info!("handle_new_layer {:?}", quality);
         let (wake_rx, wake_tx) = tokio::sync::broadcast::channel(1);
         let wake_tx = Arc::new(wake_tx);
         let context = VideoRouterContext::new(self.track.clone(), quality, ssrc, wake_rx);   
