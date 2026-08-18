@@ -2,7 +2,7 @@ use std::{sync::Arc, time::Instant};
 use rtc::rtp::Packet;
 use webrtc::media_stream::track_local::{TrackLocal};
 
-use crate::{actor::{Actor, Addr, Ctx, StoppingExt}, error::Error, room::StreamQuality, rtp_packet_gateway_router::{RtpPacketGatewayRouter, RtpPacketGatewayRouterMessage, RtpPacketMessage, VideoRouterContext}, video_layer_manager::{VideoLayerManager, VideoLayerManagerMessage}};
+use crate::{actor::{Actor, Addr, Ctx, StoppingExt}, error::Error, room::StreamQuality, rtp_packet_gateway_router::{RtpPacketGatewayRouter, RtpPacketGatewayRouterMessage, RtpPacketMessage, VideoRouterContext}, };
 
 pub struct VideoPacketForwarder {
     track: Arc<dyn TrackLocal>,
@@ -80,9 +80,12 @@ impl VideoPacketForwarder {
             } 
         }
     }
+    async fn handle_missed_packets(&mut self, packets: Vec<u16>) {
+
+    }
     fn modify_header(&mut self, packet: &mut Packet) {
         self.last_sequence_number = self.last_sequence_number.wrapping_add(1);
-        // packet.header.payload_type = self.payload_type;
+        packet.header.payload_type = self.payload_type;
         packet.header.ssrc = self.ssrc;
         packet.header.sequence_number = self.last_sequence_number;
         packet.header.timestamp = self.current_generated_ts;
@@ -128,7 +131,7 @@ impl Actor for VideoPacketForwarder {
                 self.timeout_channel.send(()).await.map_err(|_| Error::ChannelClosed).ok_or_terminate(ctx);
             }
             VideoPacketForwarderMessage::MissedPackets(missed_packets) => { 
-                // self.handle_missed_packets(missed_packets).await.ok_or_terminate(ctx);
+                self.handle_missed_packets(missed_packets).await;
             }
         }
     }

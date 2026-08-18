@@ -119,7 +119,6 @@ impl Actor for VideoLayerManager {
             VideoLayerManagerMessage::AddLayer { quality, layer } => {
                 self.quality_layers.insert(quality, layer.clone());
                 self.spawn_notify_task(ctx.addr.clone(), quality, layer.router_waker);
-                tracing::info!("{:?}", self.connection_quality);
                 if quality == self.connection_quality {
                     let message = VideoPacketForwarderMessage::LayerSwitched {
                         quality,
@@ -186,7 +185,6 @@ impl Actor for VideoLayerManager {
         tokio::spawn(async move {
             while let Some(TrackLocalEvent::OnRtcpPacket(packets)) = track.poll().await {
                 for packet in packets {
-                    tracing::info!("{:?}", packet.as_any());
                     if packet.as_any().downcast_ref::<PictureLossIndication>().is_some() {
                         let result = addr.send(VideoLayerManagerMessage::ForcePli).await;
                         if result.is_err() {
