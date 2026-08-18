@@ -153,9 +153,10 @@ pub struct IceCandidate {
 
 #[derive(Deserialize, Serialize, Debug, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
+#[repr(u8)]
 pub enum Target {
-    Publisher,
-    Subscriber
+    Publisher = 0,
+    Subscriber = 1
 }
 
 impl<C: SignalingClient, S: Storage> User<C, S> {
