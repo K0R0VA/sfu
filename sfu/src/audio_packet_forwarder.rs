@@ -3,7 +3,7 @@ use std::sync::Arc;
 use rtc::{media_stream::MediaStreamTrack, rtp::Packet, rtp_transceiver::{RTCRtpTransceiverDirection, RTCRtpTransceiverInit, rtp_sender::{RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind}}};
 use webrtc::{media_stream::track_local::{TrackLocal, static_rtp::TrackLocalStaticRTP}, peer_connection::{PeerConnection, RTCPeerConnection}};
 
-use crate::{actor::{Actor, Addr}, error::Error, rtp_packet_gateway_router::{AudioRouterContext, RtpPacketGatewayRouter, RtpPacketGatewayRouterMessage, RtpPacketMessage}, user::ConnectionRequest};
+use crate::{actor::{Actor, Addr}, error::Error, rtp_packet_gateway_router::{AudioRouterContext, RtpPacketGatewayRouter, RtpPacketGatewayRouterMessage, RtpPacketMessage}, server::Key, user::ConnectionRequest};
 
 pub struct AudioPacketForwarder {
     pub track: Arc<dyn TrackLocal>,
@@ -12,7 +12,7 @@ pub struct AudioPacketForwarder {
 }
 
 impl AudioPacketForwarder {
-    pub async fn init(pc: &Box<dyn PeerConnection>, request: ConnectionRequest<AudioPacketForwarder, AudioRouterContext>) -> Result<Self, Error> {
+    pub async fn init<K: Key>(pc: &Box<dyn PeerConnection>, request: ConnectionRequest<K, AudioPacketForwarder, AudioRouterContext>) -> Result<Self, Error> {
         let ConnectionRequest {
             peer_id,
             codec_mime_type,

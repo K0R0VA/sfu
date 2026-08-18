@@ -5,17 +5,17 @@ use rtc::{rtp::Packet};
 use tokio::{sync::mpsc::Sender, time::timeout};
 use webrtc::media_stream::track_remote::{TrackRemote, TrackRemoteEvent};
 
-use crate::{SignalingClient, Storage, actor::{Actor, Addr}, error::Error, keyframe_interceptor::KeyframeInterceptor, publisher::{Publisher, PublisherMessage}, room::{Codec, StreamQuality, VideoRouterStream}, rtp_packet_gateway_router::{RtpPacketGatewayRouter, RtpPacketGatewayRouterMessage, VideoRouterContext}, video_packet_forwarder::VideoPacketForwarder};
+use crate::{SignalingClient, Storage, actor::{Actor, Addr}, error::Error, keyframe_interceptor::KeyframeInterceptor, publisher::{Publisher, PublisherMessage}, room::{Codec, StreamQuality, VideoRouterStream}, rtp_packet_gateway_router::{RtpPacketGatewayRouter, RtpPacketGatewayRouterMessage, VideoRouterContext}, server::Key, video_packet_forwarder::VideoPacketForwarder};
 
-pub struct SimulcastManager<C: SignalingClient, S: Storage> {
+pub struct SimulcastManager<K: Key, C: SignalingClient<UserKey = K>, S: Storage> {
     pub layers: HashMap<u32, Sender<Packet>>,
-    pub publisher: Addr<Publisher<C, S>>,
+    pub publisher: Addr<Publisher<K, C, S>>,
     pub track: Arc<dyn TrackRemote>,
     pub codek: Codec
 }
 
-impl<C: SignalingClient, S: Storage> SimulcastManager<C, S> {
-    fn new(track: Arc<dyn TrackRemote>, codek: Codec, publisher: Addr<Publisher<C, S>>) -> Self {
+impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> SimulcastManager<K, C, S> {
+    fn new(track: Arc<dyn TrackRemote>, codek: Codec, publisher: Addr<Publisher<K, C, S>>) -> Self {
         Self {
             publisher,
             track,
@@ -82,7 +82,7 @@ impl<C: SignalingClient, S: Storage> SimulcastManager<C, S> {
         }
         Ok(())
     }
-    pub async fn spawn(track: Arc<dyn TrackRemote>, publisher: Addr<Publisher<C, S>>) -> Result<(), Error> {
+    pub async fn spawn(track: Arc<dyn TrackRemote>, publisher: Addr<Publisher<K, C, S>>) -> Result<(), Error> {
         let ssrc = track.ssrcs().await[0];
         let mime_type = track.codec(ssrc).await.map(|c| c.mime_type).unwrap();
         let codec = Codec::from_str(&mime_type).unwrap_or_default();

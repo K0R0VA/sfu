@@ -1,25 +1,18 @@
-use std::{collections::HashMap, hash::Hash};
-use serde::Serialize;
-use uuid::Uuid;
+use std::{collections::HashMap, fmt::{Debug, Display}, hash::Hash};
 
 use crate::{Storage, SignalingClient, actor::{Actor, Addr, Ctx}, error::Error, room::Room};
 
-pub struct Server<K, C: SignalingClient, S: Storage> {
-    rooms: HashMap<K, Addr<Room<C, S>>>
+pub struct Server<K: Key, C: SignalingClient<UserKey = K>, S: Storage> {
+    rooms: HashMap<K, Addr<Room<K, C, S>>>
 }
 
-#[derive(Serialize)]
-pub struct RoomResponse {
-    id: Uuid,
-}
-
-impl<K: RoomKey, C: SignalingClient, S: Storage> Addr<Server<K, C, S>> {
-    pub async fn create_room(&self, id: K) -> Result<Addr<Room<C, S>>, Error> {
+impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> Addr<Server<K, C, S>> {
+    pub async fn create_room(&self, id: K) -> Result<Addr<Room<K, C, S>>, Error> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let _ = self.send(ServerMessage::CreateRoom { id, response_channel: tx }).await;
         Ok(rx.await?)
     }
-    pub async fn get_room(&self, room_id: K) -> Result<Addr<Room<C, S>>, Error> {
+    pub async fn get_room(&self, room_id: K) -> Result<Addr<Room<K, C, S>>, Error> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let _ = self.send(ServerMessage::GetRoomAddr { room_id, response_channel: tx } ).await;
         let room = rx.await?.ok_or(Error::SystemError { message: "Room not found".into() })?;
@@ -27,7 +20,7 @@ impl<K: RoomKey, C: SignalingClient, S: Storage> Addr<Server<K, C, S>> {
     }
 }
 
-impl<K: RoomKey, C: SignalingClient, S: Storage> Default for Server<K, C, S> {
+impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> Default for Server<K, C, S> {
     fn default() -> Self {
         Self {
             rooms: HashMap::new()
@@ -37,18 +30,16 @@ impl<K: RoomKey, C: SignalingClient, S: Storage> Default for Server<K, C, S> {
 
 
 
-pub enum ServerMessage<K: RoomKey, C: SignalingClient, S: Storage> {
-    CreateRoom { id: K, response_channel: tokio::sync::oneshot::Sender<Addr<Room<C, S>>> },
+pub enum ServerMessage<K: Key, C: SignalingClient<UserKey = K>, S: Storage> {
+    CreateRoom { id: K, response_channel: tokio::sync::oneshot::Sender<Addr<Room<K, C, S>>> },
     DeleteRoom { room_id: K },
-    GetRoomAddr { room_id: K, response_channel: tokio::sync::oneshot::Sender<Option<Addr<Room<C, S>>>> },
+    GetRoomAddr { room_id: K, response_channel: tokio::sync::oneshot::Sender<Option<Addr<Room<K, C, S>>>> },
 }
 
-pub trait RoomKey: 'static + Send + Hash + Eq {
-    
-}
+pub trait Key: Send + Sync + Hash + Eq + Display + Clone + Copy + 'static {}
 
 
-impl<K: RoomKey, C: SignalingClient, S: Storage> Actor for Server<K, C, S> {
+impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> Actor for Server<K, C, S> {
     type Message = ServerMessage<K, C, S>;
     async fn handle(&mut self, _ctx: &mut Ctx<'_, Self>, msg: Self::Message) {
         match msg {
@@ -80,4 +71,4 @@ impl<K: RoomKey, C: SignalingClient, S: Storage> Actor for Server<K, C, S> {
     }
 }
 
-impl<K: Eq + Hash + Send + 'static> RoomKey for K {} 
+impl<K: Eq + Hash + Send + Sync + Display + Clone + Copy + 'static> Key for K {} 

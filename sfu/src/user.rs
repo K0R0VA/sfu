@@ -1,23 +1,20 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use crate::{Storage, SignalingClient, actor::{Actor, Addr, Ctx, StoppingExt, WeakAddr}, audio_packet_forwarder::AudioPacketForwarder, error::Error, keyframe_interceptor::KeyframeInterceptor, publisher::{Publisher, PublisherMessage}, room::{Codec, Room, RoomMessage, StreamQuality}, rtp_packet_gateway_router::{AudioRouterContext, RouterContext, RouterWaker, RtpPacketGatewayRouter, RtpPacketMessage, VideoRouterContext}, subscriber::{Subscriber, SubscriberMessage}, video_packet_forwarder::VideoPacketForwarder};
+use crate::{SignalingClient, Storage, actor::{Actor, Addr, Ctx, StoppingExt, WeakAddr}, audio_packet_forwarder::AudioPacketForwarder, error::Error, keyframe_interceptor::KeyframeInterceptor, publisher::{Publisher, PublisherMessage}, room::{Codec, Room, RoomMessage, StreamQuality}, rtp_packet_gateway_router::{AudioRouterContext, RouterContext, RouterWaker, RtpPacketGatewayRouter, RtpPacketMessage, VideoRouterContext}, server::Key, subscriber::{Subscriber, SubscriberMessage}, video_packet_forwarder::VideoPacketForwarder};
 
 
-pub struct User<C: SignalingClient, S: Storage> {
-    pub room: Addr<Room<C, S>>,
-    pub id: Uuid,
-    pub session_params: SessionParams,
-    // pub sync_channel: 
-    pub signaling_client: C, // 
-    pub publisher: WeakAddr<Publisher<C, S>>,
-    pub subscriber: WeakAddr<Subscriber<C, S>>,
+pub struct User<K: Key, C: SignalingClient<UserKey = K>, S: Storage> {
+    pub id: K,
+    pub room: Addr<Room<K, C, S>>,
+    pub signaling_client: C,
+    pub publisher: WeakAddr<Publisher<K, C, S>>,
+    pub subscriber: WeakAddr<Subscriber<K, C, S>>,
 }
 
-impl<C: SignalingClient, S: Storage> User<C, S> {
-    pub async fn new(user_id: Uuid, signaling_client: C, session_params: SessionParams, room: Addr<Room<C, S>>) -> Result<Self, Error> {
+impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> User<K, C, S> {
+    pub async fn new(user_id: K, signaling_client: C, room: Addr<Room<K, C, S>>) -> Result<Self, Error> {
         Ok(Self {
             id: user_id,
-            session_params,
             room,
             signaling_client,
             publisher: WeakAddr::default(),
@@ -30,32 +27,32 @@ pub struct SessionParams {
     pub user_id: Option<Uuid>,
 }
 
-pub enum UserMessage<C: SignalingClient> {
+pub enum UserMessage<K: Key, C: SignalingClient> {
     Reconnect(C),
-    SignalMessage(SignalMessage),
+    SignalMessage(SignalMessage<K>),
     SwitchQualityLayer { quality: StreamQuality },
-    SyncMessage(SyncMessage),
-    ConnectAudio(ConnectionRequest<AudioPacketForwarder, AudioRouterContext>),
+    SyncMessage(SyncMessage<K>),
+    ConnectAudio(ConnectionRequest<K, AudioPacketForwarder, AudioRouterContext>),
     ConnectVideo { 
-        request: ConnectionRequest<VideoPacketForwarder, VideoRouterContext>, 
+        request: ConnectionRequest<K, VideoPacketForwarder, VideoRouterContext>, 
         quality: StreamQuality , 
         keyframe_interceptor: Addr<KeyframeInterceptor>, 
         wake_notification: RouterWaker
     },
     Unsubscribe {
-        user_id: Uuid,
+        user_id: K,
     },
     RoomClosed
 }
 
-pub enum SyncMessage {
-    Message(SignalMessage),
+pub enum SyncMessage<K> {
+    Message(SignalMessage<K>),
     Close,
     Error(String)
 }
 
-pub struct ConnectionRequest<T: Actor, R: RouterContext<T>> where T::Message: From<RtpPacketMessage>  {
-    pub peer_id: Uuid,
+pub struct ConnectionRequest<K: Key, T: Actor, R: RouterContext<T>> where T::Message: From<RtpPacketMessage>  {
+    pub peer_id: K,
     pub gateway_router: Addr<RtpPacketGatewayRouter<T, R>>,
     pub codec_mime_type: Codec,
 }
@@ -66,8 +63,8 @@ pub enum ConnectionRequestKind {
     Video { stream_quality: StreamQuality }
 }
 
-impl<C: SignalingClient, S: Storage> Actor for User<C, S> {
-    type Message = UserMessage<C>;
+impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> Actor for User<K, C, S> {
+    type Message = UserMessage<K, C>;
     async fn handle(&mut self, ctx: &mut Ctx<'_, Self>, msg: Self::Message) {
         match msg {
             UserMessage::Reconnect(c) => {
@@ -114,22 +111,16 @@ impl<C: SignalingClient, S: Storage> Actor for User<C, S> {
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(tag = "kind", rename_all = "snake_case")] 
-pub enum SignalMessage {
+pub enum SignalMessage<K> {
     Rtc {
         target: Target,
         #[serde(flatten)] 
         message_type: MessageType,
     },
     ConnectionQuality { quality: StreamQuality },
-    PeerLeft { peer_id: Uuid },
+    PeerLeft { peer_id: K },
 }
 
-impl From<SignalMessage> for String {
-    fn from(value: SignalMessage) -> Self {
-        let str = serde_json::json!(value);
-        str.to_string()
-    }
-}
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(tag = "type", rename_all = "snake_case")] 
@@ -159,7 +150,7 @@ pub enum Target {
     Subscriber = 1
 }
 
-impl<C: SignalingClient, S: Storage> User<C, S> {
+impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> User<K, C, S> {
     async fn initiate(&mut self, ctx: &Ctx<'_, Self>) -> Result<(), Error> {
         self.room.send(RoomMessage::Join { peer_id: self.id, addr: ctx.addr.clone() }).await?;
         let addr = ctx.addr.clone();
@@ -169,7 +160,7 @@ impl<C: SignalingClient, S: Storage> User<C, S> {
         self.publisher.set_addr(publisher);
         Ok(())
     }
-    async fn handle_ws_message(&mut self, ctx: &mut Ctx<'_, Self>, message: SyncMessage) -> Result<(), Error> {
+    async fn handle_ws_message(&mut self, ctx: &mut Ctx<'_, Self>, message: SyncMessage<K>) -> Result<(), Error> {
         let message = match message {
             SyncMessage::Close => {
                 self.stop(ctx).await;
@@ -193,13 +184,13 @@ impl<C: SignalingClient, S: Storage> User<C, S> {
         }
         Ok(())
     }
-    async fn send_ws_message(&mut self, msg: SignalMessage) -> Result<(), Error> {
+    async fn send_ws_message(&mut self, msg: SignalMessage<K>) -> Result<(), Error> {
         self.signaling_client.send(msg.into())
             .await
             .map_err(|e| Error::SystemError { message: e.to_string().into() })?;
         Ok(())
     }
-    async fn unsubscribe(&mut self, peer_id: Uuid) -> Result<(), Error> {
+    async fn unsubscribe(&mut self, peer_id: K) -> Result<(), Error> {
         let _ = self.subscriber.try_send(SubscriberMessage::Unsubscribe { peer_id }).await;
         self.signaling_client.send(SignalMessage::PeerLeft { peer_id }.into())
             .await

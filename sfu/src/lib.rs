@@ -22,6 +22,7 @@ use uuid::Uuid;
 use webrtc::peer_connection::{MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, RTCConfigurationBuilder, RTCIceServer, register_default_interceptors};
 use webrtc::runtime::TokioRuntime;
 use crate::error::Error;
+use crate::server::Key;
 use crate::user::{SignalMessage};
 
 
@@ -59,7 +60,8 @@ pub async fn create_peer(handler: impl PeerConnectionEventHandler) -> Result<Box
 }
 
 pub trait SignalingClient: Send + 'static {
-    type Item: From<SignalMessage>;
+    type UserKey: Key;
+    type Item: From<SignalMessage<Self::UserKey>>;                               
     type Error: std::error::Error + Debug;
     fn send(&mut self, message: Self::Item) -> impl Future<Output = Result<(), Self::Error>> + Send;
 }

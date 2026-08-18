@@ -3,23 +3,23 @@ use rtc::rtp_transceiver::{ rtp_sender::RtpCodecKind};
 use tokio::sync::mpsc::Receiver;
 use uuid::Uuid;
 use webrtc::{media_stream::track_remote::TrackRemote, peer_connection::{PeerConnection, PeerConnectionEventHandler, RTCIceCandidateInit, RTCPeerConnectionIceEvent, RTCSessionDescription}};
-use crate::{SignalingClient, Storage, actor::{Actor, Addr, Ctx, StoppingExt}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, keyframe_interceptor::{KeyframeInterceptor, RequestKeyframe}, quality_monitor::{QualityMonitor, QualityThresholds}, room::{AudioRouterStream, Codec, Room, RoomMessage, StreamQuality, VideoRouterStream}, rtp_packet_gateway_router::{AudioRouterContext, RtpPacketGatewayRouter, VideoRouterContext}, simulcast_manager::SimulcastManager, user::{IceCandidate, MessageType, SignalMessage, Target, User, UserMessage}, video_packet_forwarder::VideoPacketForwarder};
+use crate::{SignalingClient, Storage, actor::{Actor, Addr, Ctx, StoppingExt}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, keyframe_interceptor::{KeyframeInterceptor, RequestKeyframe}, quality_monitor::{QualityMonitor, QualityThresholds}, room::{AudioRouterStream, Codec, Room, RoomMessage, StreamQuality, VideoRouterStream}, rtp_packet_gateway_router::{AudioRouterContext, RtpPacketGatewayRouter, VideoRouterContext}, server::Key, simulcast_manager::SimulcastManager, user::{IceCandidate, MessageType, SignalMessage, Target, User, UserMessage}, video_packet_forwarder::VideoPacketForwarder};
 
-pub struct Publisher<C: SignalingClient, S: Storage> {
-    pub peer_id: Uuid,
+pub struct Publisher<K: Key, C: SignalingClient<UserKey = K>, S: Storage> {
+    pub peer_id: K,
     pub pc: Arc<dyn PeerConnection>,
-    pub user: Addr<User<C, S>>,
-    pub room: Addr<Room<C, S>>,    
+    pub user: Addr<User<K, C, S>>,
+    pub room: Addr<Room<K, C, S>>,    
     pub video_track_keyframe_interceptors: Vec<Addr<KeyframeInterceptor>>,
-    pub quality_monitor: Addr<QualityMonitor<C, S>>,
+    pub quality_monitor: Addr<QualityMonitor<K, C, S>>,
     pub rx: Option<Receiver<PublisherMessage>>
 }
 
 
 const TARGET: Target = Target::Publisher;
 
-impl<C: SignalingClient, S: Storage> Publisher<C, S> {
-    pub async fn new(user: Addr<User<C, S>>, room: Addr<Room<C, S>>, peer_id: Uuid) -> Result<Self, Error> {
+impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> Publisher<K, C, S> {
+    pub async fn new(user: Addr<User<K, C, S>>, room: Addr<Room<K, C, S>>, peer_id: K) -> Result<Self, Error> {
         let (tx, rx) = tokio::sync::mpsc::channel(8);
         let handler =  PublisherPeerConnectionHandler { tx };
         let pc = create_peer(handler).await?;
@@ -57,7 +57,7 @@ pub enum PublisherMessage {
     OnTrack(Arc<dyn TrackRemote>)
 }
 
-impl<C: SignalingClient, S: Storage> Actor for Publisher<C, S> {
+impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> Actor for Publisher<K, C, S> {
     type Message = PublisherMessage;
     async fn handle(&mut self, ctx: &mut Ctx<'_, Self>, msg: Self::Message) {
         match msg {
@@ -117,7 +117,7 @@ impl<C: SignalingClient, S: Storage> Actor for Publisher<C, S> {
     }
 }
 
-impl<C: SignalingClient, S: Storage> Publisher<C, S> {
+impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> Publisher<K,C, S> {
     async fn handle_ws_message(&mut self, message: MessageType) -> Result<(), Error> {
         match message {
             MessageType::IceRestart { sdp } => {

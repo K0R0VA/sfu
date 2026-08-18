@@ -3,23 +3,23 @@ use rtc::{rtp_transceiver::RTCRtpTransceiverDirection};
 use tokio::sync::mpsc::Receiver;
 use uuid::Uuid;
 use webrtc::peer_connection::{PeerConnection, PeerConnectionEventHandler, RTCIceCandidateInit, RTCPeerConnectionIceEvent, RTCSessionDescription, RTCSignalingState};
-use crate::{SignalingClient, Storage, actor::{Actor, Addr, Ctx, StoppingExt}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, keyframe_interceptor::KeyframeInterceptor, room::StreamQuality, rtp_packet_gateway_router::{AudioRouterContext, RouterWaker, VideoRouterContext}, subscriber::SubscriberMessage::OnNegotiationNeeded, user::{ConnectionRequest, IceCandidate, MessageType, SignalMessage, Target, User, UserMessage}, video_layer_manager::{QualityLayer, VideoLayerManager, VideoLayerManagerMessage}, video_packet_forwarder::VideoPacketForwarder};
+use crate::{SignalingClient, Storage, actor::{Actor, Addr, Ctx, StoppingExt}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, keyframe_interceptor::KeyframeInterceptor, room::StreamQuality, rtp_packet_gateway_router::{AudioRouterContext, RouterWaker, VideoRouterContext}, server::Key, subscriber::SubscriberMessage::OnNegotiationNeeded, user::{ConnectionRequest, IceCandidate, MessageType, SignalMessage, Target, User, UserMessage}, video_layer_manager::{QualityLayer, VideoLayerManager, VideoLayerManagerMessage}, video_packet_forwarder::VideoPacketForwarder};
 
-pub struct Subscriber<C: SignalingClient, S: Storage> {
-    pub user: Addr<User<C, S>>,
+pub struct Subscriber<K: Key, C: SignalingClient<UserKey = K>, S: Storage> {
+    pub user: Addr<User<K, C, S>>,
     pub pc: Box<dyn PeerConnection>,
-    pub audio_subscriptions: HashMap<Uuid, Addr<AudioPacketForwarder>>,
-    pub video_subscriptions: HashMap<Uuid, Addr<VideoLayerManager>>,
+    pub audio_subscriptions: HashMap<K, Addr<AudioPacketForwarder>>,
+    pub video_subscriptions: HashMap<K, Addr<VideoLayerManager>>,
     pub current_quality: StreamQuality,
-    pub rx: Option<Receiver<SubscriberMessage>>,
+    pub rx: Option<Receiver<SubscriberMessage<K>>>,
     pub signaling_state: Option<RTCSignalingState>,
     pub should_send_offer: bool,
 }
 
 const TARGET: Target = Target::Subscriber;
 
-impl<C: SignalingClient, S: Storage> Subscriber<C, S> {
-    pub async fn new(user: Addr<User<C, S>>) -> Result<Self, Error> {
+impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> Subscriber<K, C, S> {
+    pub async fn new(user: Addr<User<K, C, S>>) -> Result<Self, Error> {
         let (tx, rx) = tokio::sync::mpsc::channel(8);
         let pc = create_peer(SubscriberPeerConnectionHandler {tx}).await?;
         Ok(Self {
@@ -35,26 +35,26 @@ impl<C: SignalingClient, S: Storage> Subscriber<C, S> {
     }
 }
 
-pub enum SubscriberMessage {
+pub enum SubscriberMessage<K: Key> {
     SwitchQualityLayer { quality: StreamQuality },
     IceCandidate { 
         candidate: IceCandidate,
     },
     SignalingStateChanged (RTCSignalingState),
     Websocket (MessageType),
-    ConnectAudio(ConnectionRequest<AudioPacketForwarder, AudioRouterContext>),
+    ConnectAudio(ConnectionRequest<K, AudioPacketForwarder, AudioRouterContext>),
     ConnectVideo { 
-        request: ConnectionRequest<VideoPacketForwarder, VideoRouterContext>, 
+        request: ConnectionRequest<K, VideoPacketForwarder, VideoRouterContext>, 
         quality: StreamQuality, 
         keyframe_interceptor: Addr<KeyframeInterceptor>, 
         wake_notification: RouterWaker
     },
-    Unsubscribe { peer_id: Uuid },
+    Unsubscribe { peer_id: K },
     OnNegotiationNeeded
 }
 
-impl<C: SignalingClient, S: Storage> Actor for Subscriber<C, S> {
-    type Message = SubscriberMessage;
+impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> Actor for Subscriber<K, C, S> {
+    type Message = SubscriberMessage<K>;
     async fn handle(&mut self, ctx: &mut Ctx<'_, Self>, msg: Self::Message) {
         match msg {
             SubscriberMessage::SignalingStateChanged(state) => {
@@ -114,7 +114,7 @@ impl<C: SignalingClient, S: Storage> Actor for Subscriber<C, S> {
     }
 }
 
-impl<C: SignalingClient, S: Storage> Subscriber<C, S> {
+impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> Subscriber<K, C, S> {
     async fn handle_ws_message(&mut self, message: MessageType) -> Result<(), Error> {
         match message {
             MessageType::IceRestart {sdp} => {
@@ -162,7 +162,7 @@ impl<C: SignalingClient, S: Storage> Subscriber<C, S> {
         self.user.send(UserMessage::SignalMessage(message)).await?;
         Ok(())
     }
-    async fn connect_audio(&mut self, request: ConnectionRequest<AudioPacketForwarder, AudioRouterContext>) -> Result<(), Error> {
+    async fn connect_audio(&mut self, request: ConnectionRequest<K, AudioPacketForwarder, AudioRouterContext>) -> Result<(), Error> {
         let peer_id = request.peer_id;
         let audio_subscription = AudioPacketForwarder::init(&self.pc, request).await?;
         let audio_subscription = audio_subscription.start();
@@ -171,7 +171,7 @@ impl<C: SignalingClient, S: Storage> Subscriber<C, S> {
     }
     async fn connect_video(&mut self, 
         quality: StreamQuality, 
-        request: ConnectionRequest<VideoPacketForwarder, VideoRouterContext>, 
+        request: ConnectionRequest<K, VideoPacketForwarder, VideoRouterContext>, 
         keyframe_interceptor: Addr<KeyframeInterceptor>,
         wake_notification: RouterWaker
     ) -> Result<(), Error> {
@@ -197,7 +197,7 @@ impl<C: SignalingClient, S: Storage> Subscriber<C, S> {
         };
         Ok(())
     }
-    async fn disconnect_from_user(&mut self, speaker_id: Uuid) -> Result<(), Error> {
+    async fn disconnect_from_user(&mut self, speaker_id: K) -> Result<(), Error> {
         if let Some(audio_subscriptions) = self.audio_subscriptions.remove(&speaker_id) {
             audio_subscriptions.terminate().await?;
         };
@@ -208,12 +208,12 @@ impl<C: SignalingClient, S: Storage> Subscriber<C, S> {
     }
 }
 
-pub struct SubscriberPeerConnectionHandler {
-    tx: tokio::sync::mpsc::Sender<SubscriberMessage>
+pub struct SubscriberPeerConnectionHandler<K: Key> {
+    tx: tokio::sync::mpsc::Sender<SubscriberMessage<K>>
 }
 
 #[async_trait::async_trait]
-impl PeerConnectionEventHandler for SubscriberPeerConnectionHandler {
+impl<K: Key> PeerConnectionEventHandler for SubscriberPeerConnectionHandler<K> {
     async fn on_ice_candidate(&self, event: RTCPeerConnectionIceEvent) {
         if let Ok(RTCIceCandidateInit { candidate, sdp_mid, sdp_mline_index, .. }) = event.candidate.to_json() {
             self.tx.send(SubscriberMessage::IceCandidate { candidate: IceCandidate { candidate, sdp_mid, sdp_mline_index } })

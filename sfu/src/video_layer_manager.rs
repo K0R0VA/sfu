@@ -3,10 +3,9 @@ use rtc::{media_stream::MediaStreamTrack, rtcp::{payload_feedbacks::picture_loss
 use uuid::Uuid;
 use webrtc::{media_stream::{track_local::{TrackLocal, TrackLocalEvent, static_rtp::TrackLocalStaticRTP}}, peer_connection::PeerConnection};
 
-use crate::{actor::{Actor, Addr, StoppingExt}, error::Error, keyframe_interceptor::{KeyframeInterceptor, RequestKeyframe}, room::{Codec, StreamQuality}, rtp_packet_gateway_router::{RouterWaker, RtpPacketGatewayRouter, VideoRouterContext}, video_packet_forwarder::{VideoPacketForwarder, VideoPacketForwarderMessage}};
+use crate::{actor::{Actor, Addr, StoppingExt}, error::Error, keyframe_interceptor::{KeyframeInterceptor, RequestKeyframe}, room::{Codec, StreamQuality}, rtp_packet_gateway_router::{RouterWaker, RtpPacketGatewayRouter, VideoRouterContext}, server::Key, video_packet_forwarder::{VideoPacketForwarder, VideoPacketForwarderMessage}};
 
 pub struct VideoLayerManager {
-    pub peer_id: Uuid,
     pub quality_layers: HashMap<StreamQuality, QualityLayer>,
     pub packet_forwarder: Addr<VideoPacketForwarder>,
     pub connection_quality: StreamQuality,
@@ -23,9 +22,9 @@ pub struct QualityLayer {
 }
 
 impl VideoLayerManager {
-    pub async fn new(
+    pub async fn new<K: Key>(
         pc: &Box<dyn PeerConnection>, 
-        peer_id: Uuid, 
+        peer_id: K, 
         codec: Codec, 
         current_connection_quality: StreamQuality,
         quality: StreamQuality,
@@ -73,7 +72,6 @@ impl VideoLayerManager {
             .start_with_capacity(2048);
         quality_layers.insert(quality, quality_layer);
         let this = Self { 
-            peer_id, 
             quality_layers, 
             active_quality: None, 
             connection_quality: current_connection_quality, 

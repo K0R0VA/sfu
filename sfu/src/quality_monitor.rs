@@ -8,11 +8,11 @@ use tokio_stream::wrappers::IntervalStream;
 use uuid::Uuid;
 use webrtc::peer_connection::{PeerConnection, RTCStatsReport, RTCStatsReportEntry};
 
-use crate::{CurrentStats, SignalingClient, Storage, StorageConfiguration, actor::{Actor, Addr, StoppingExt, StreamItem}, error::Error, room::StreamQuality, user::{User, UserMessage}};
+use crate::{CurrentStats, SignalingClient, Storage, StorageConfiguration, actor::{Actor, Addr, StoppingExt, StreamItem}, error::Error, room::StreamQuality, server::Key, user::{User, UserMessage}};
 
-pub struct QualityMonitor<C: SignalingClient, S: Storage> {
+pub struct QualityMonitor<K: Key, C: SignalingClient<UserKey = K>, S: Storage> {
     id: Uuid,
-    user: Addr<User<C, S>>,
+    user: Addr<User<K, C, S>>,
     pc: Arc<dyn PeerConnection>,
     storage: S,
     last_stats_time: Instant,
@@ -29,7 +29,7 @@ pub enum QualityMonitorMessage {
     Close
 }
 
-impl<C: SignalingClient, S: Storage> Actor for QualityMonitor<C, S> {
+impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> Actor for QualityMonitor<K, C, S> {
     type Message = QualityMonitorMessage;
     async fn handle(&mut self, ctx: &mut crate::actor::Ctx<'_, Self>, m: Self::Message) {
         match m {
@@ -48,8 +48,8 @@ impl<C: SignalingClient, S: Storage> Actor for QualityMonitor<C, S> {
     async fn stopping(self, _ctx: &crate::actor::Ctx<'_, Self>) {}
 }
 
-impl<C: SignalingClient, S: Storage> QualityMonitor<C, S> {
-    pub async fn new(pc: Arc<dyn PeerConnection>, user: Addr<User<C, S>>, thresholds: QualityThresholds) -> Result<Self, Error> {
+impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> QualityMonitor<K, C, S> {
+    pub async fn new(pc: Arc<dyn PeerConnection>, user: Addr<User<K, C, S>>, thresholds: QualityThresholds) -> Result<Self, Error> {
         let configuration = <S::Configuration>::from_env()
             .map_err(|e| Error::SystemError { message: e.to_string().into() })?;
         let storage = S::connect(&configuration).await.map_err(|e| Error::SystemError { message: e.to_string().into() })?;
