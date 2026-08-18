@@ -120,9 +120,7 @@ pub enum SignalMessage {
         #[serde(flatten)] 
         message_type: MessageType,
     },
-    RoomInfo { name: String, },
     ConnectionQuality { quality: StreamQuality },
-    Welcome { peer_id: Uuid, },
     PeerLeft { peer_id: Uuid },
 }
 
@@ -168,13 +166,6 @@ impl<C: SignalingClient, S: Storage> User<C, S> {
         self.subscriber.set_addr(subscriber);
         let publisher = Publisher::new(addr.clone(),  self.room.clone(), self.id).await?.start();
         self.publisher.set_addr(publisher);
-        self.send_welcome().await?;
-        Ok(())
-    }
-    async fn send_welcome(&mut self) -> Result<(), Error> {
-        self.signaling_client.send(SignalMessage::Welcome { peer_id: self.id }.into())
-            .await
-            .map_err(|e| Error::SystemError { message: e.to_string().into() })?;
         Ok(())
     }
     async fn handle_ws_message(&mut self, ctx: &mut Ctx<'_, Self>, message: SyncMessage) -> Result<(), Error> {
