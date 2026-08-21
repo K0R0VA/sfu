@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::{Debug, Display}, hash::Hash};
+use std::{collections::HashMap, fmt::{Display}, hash::Hash};
 
 use crate::{Storage, SignalingClient, actor::{Actor, Addr, Ctx}, error::Error, room::Room};
 

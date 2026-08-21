@@ -1,7 +1,7 @@
 use std::{collections::HashMap, fmt::Display, str::FromStr};
 use serde::{Deserialize, Serialize};
 
-use crate::{SignalingClient, Storage, actor::{Actor, Addr, Ctx}, error::Error, keyframe_interceptor::KeyframeInterceptor, rtp_packet_gateway_router::{AudioRouter, RouterWaker, VideoRouter}, server::Key, user::{ConnectionRequest, User, UserMessage}};
+use crate::{SignalingClient, Storage, actor::{Actor, Addr, Ctx, StoppingExt}, error::Error, keyframe_interceptor::KeyframeInterceptor, rtp_packet_gateway_router::{AudioRouter, RouterWaker, VideoRouter}, server::Key, user::{ConnectionRequest, User, UserMessage}};
 
 pub struct Room<K: Key, C: SignalingClient<UserKey = K>, S: Storage> {
     peers: HashMap<K, Peer<K, C, S>>
@@ -141,10 +141,10 @@ pub enum RoomMessage<K: Key, C: SignalingClient<UserKey = K>, S: Storage> {
 
 impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> Actor for Room<K, C, S> {
     type Message = RoomMessage<K, C, S>;
-    async fn handle(&mut self, _ctx: &mut Ctx<'_, Self>, msg: Self::Message) {
+    async fn handle(&mut self, ctx: &mut Ctx<'_, Self>, msg: Self::Message) {
         match msg {
             RoomMessage::Join { peer_id, addr } => {
-                self.add_peer(peer_id, addr);
+                self.add_peer(peer_id, addr).await.ok_or_terminate(ctx);
             }
             RoomMessage::GetUser { peer_id, response_channel } => {
                 let user = self.peers.get(&peer_id).map(|p| p.user.clone());
@@ -154,13 +154,13 @@ impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> Actor for Room<K, C, S
                 self.connect_old_streams(peer_id).await;
             }
             RoomMessage::AddAudioTrack { peer_id, router } => {
-                self.connect_new_audio_stream(peer_id, router.clone()).await;
-                let peer = self.peers.get_mut(&peer_id).unwrap();
+                self.connect_new_audio_stream(peer_id, router.clone()).await.ok_or_terminate(ctx);
+                let Some(peer) = self.peers.get_mut(&peer_id) else { return; };
                 peer.add_audio_stream(router);
             },
             RoomMessage::AddVideoTrack { peer_id, quality, video_router_stream} => {
-                self.connect_new_video_stream(peer_id, quality, video_router_stream.clone()).await;
-                let peer = self.peers.get_mut(&peer_id).unwrap();
+                self.connect_new_video_stream(peer_id, quality, video_router_stream.clone()).await.ok_or_terminate(ctx);
+                let Some(peer) = self.peers.get_mut(&peer_id) else { return; };
                 peer.add_stream_stream(quality, video_router_stream);
             }
             RoomMessage::Leave { peer_id } => {
@@ -183,25 +183,26 @@ impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> Actor for Room<K, C, S
 }
 
 impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> Room<K, C, S> {
-    async fn connect_new_audio_stream(&mut self, peer_id: K, stream: AudioRouterStream) {
+    async fn connect_new_audio_stream(&mut self, peer_id: K, stream: AudioRouterStream) -> Result<(), Error> {
         let peers = self.peers.iter()
             .filter(|(id, _)| **id != peer_id);
         for (_, peer) in peers {
             let Peer { user, .. } = peer;
-            let _ = user.send(UserMessage::ConnectAudio(ConnectionRequest { 
+            user.send(UserMessage::ConnectAudio(ConnectionRequest { 
                 peer_id, 
                 gateway_router: stream.router.clone(), 
                 codec_mime_type: stream.codec.clone()
-            })).await;
+            })).await?;
         }
+        Ok(())
     }
     async fn connect_new_video_stream(&mut self, peer_id: K, quality: StreamQuality, video_router_stream: VideoRouterStream
-    ) {
+    )  -> Result<(), Error> {
         let peers = self.peers.iter()
             .filter(|(id, _)| **id != peer_id);
         for (_, peer) in peers {
             let Peer { user, .. } = peer;
-            let _ = user.send(UserMessage::ConnectVideo { 
+            user.send(UserMessage::ConnectVideo { 
                 quality, 
                 request: ConnectionRequest { 
                     peer_id, 
@@ -210,8 +211,9 @@ impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> Room<K, C, S> {
                 },
                 keyframe_interceptor: video_router_stream.keyframe_interceptor.clone(),
                 wake_notification: video_router_stream.wake_tx.clone()
-            }).await;
+            }).await?;
         }
+        Ok(())
     }
     async fn connect_old_streams(&mut self, peer_id: K) {
         let Some(Peer { user, .. }) = self.peers.get(&peer_id) else { return ; };
@@ -239,8 +241,12 @@ impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> Room<K, C, S> {
             }
         }
     }
-    fn add_peer(&mut self, peer_id: K, user: Addr<User<K, C, S>>) {
-        if self.peers.contains_key(&peer_id) { return; }
+    async fn add_peer(&mut self, peer_id: K, user: Addr<User<K, C, S>>) -> Result<(), Error> {
+        if self.peers.contains_key(&peer_id) { return Ok(()); }
+        for Peer { user , .. } in self.peers.values() {
+            user.send(UserMessage::NewNeighbour(peer_id)).await?;
+        }
         self.peers.insert(peer_id, Peer { user, video_streams: HashMap::with_capacity(3), audio_steam: None });
-    }
+        Ok(())
+    }   
 }

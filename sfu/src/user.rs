@@ -28,6 +28,7 @@ pub struct SessionParams {
 }
 
 pub enum UserMessage<K: Key, C: SignalingClient> {
+    NewNeighbour(K),
     Reconnect(C),
     SignalMessage(SignalMessage<K>),
     SwitchQualityLayer { quality: StreamQuality },
@@ -67,6 +68,9 @@ impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> Actor for User<K, C, S
     type Message = UserMessage<K, C>;
     async fn handle(&mut self, ctx: &mut Ctx<'_, Self>, msg: Self::Message) {
         match msg {
+            UserMessage::NewNeighbour(id) => {
+                self.send_ws_message(SignalMessage::PeerJoin { peer_id: id }).await.ok_or_terminate(ctx);
+            }
             UserMessage::Reconnect(c) => {
                 self.signaling_client = c;
             }
@@ -75,7 +79,6 @@ impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> Actor for User<K, C, S
             }
             UserMessage::SwitchQualityLayer { quality } => {
                 self.subscriber.try_send(SubscriberMessage::SwitchQualityLayer { quality }).await.ok_or_terminate(ctx);
-                self.send_ws_message(SignalMessage::ConnectionQuality { quality }).await.ok_or_terminate(ctx);
             }
             UserMessage::SyncMessage(message) => {
                 let _ = self.handle_ws_message(ctx, message).await;
@@ -112,12 +115,12 @@ impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> Actor for User<K, C, S
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(tag = "kind", rename_all = "snake_case")] 
 pub enum SignalMessage<K> {
+    PeerJoin { peer_id: K },
     Rtc {
         target: Target,
         #[serde(flatten)] 
         message_type: MessageType,
     },
-    ConnectionQuality { quality: StreamQuality },
     PeerLeft { peer_id: K },
 }
 
