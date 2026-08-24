@@ -2,7 +2,7 @@ use std::{collections::HashMap};
 use rtc::{rtp_transceiver::RTCRtpTransceiverDirection};
 use tokio::sync::mpsc::Receiver;
 use uuid::Uuid;
-use webrtc::peer_connection::{PeerConnection, PeerConnectionEventHandler, RTCIceCandidateInit, RTCPeerConnectionIceEvent, RTCSessionDescription, RTCSignalingState};
+use webrtc::peer_connection::{PeerConnection, PeerConnectionEventHandler, RTCIceCandidateInit, RTCIceServer, RTCPeerConnectionIceEvent, RTCSessionDescription, RTCSignalingState};
 use crate::{SignalingClient, Storage, actor::{Actor, Addr, Ctx, StoppingExt}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, keyframe_interceptor::KeyframeInterceptor, room::StreamQuality, rtp_packet_gateway_router::{AudioRouterContext, RouterWaker, VideoRouterContext}, server::Key, subscriber::SubscriberMessage::OnNegotiationNeeded, user::{ConnectionRequest, IceCandidate, MessageType, SignalMessage, Target, User, UserMessage}, video_layer_manager::{QualityLayer, VideoLayerManager, VideoLayerManagerMessage}, video_packet_forwarder::VideoPacketForwarder};
 
 pub struct Subscriber<K: Key, C: SignalingClient<UserKey = K>, S: Storage> {
@@ -19,9 +19,9 @@ pub struct Subscriber<K: Key, C: SignalingClient<UserKey = K>, S: Storage> {
 const TARGET: Target = Target::Subscriber;
 
 impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> Subscriber<K, C, S> {
-    pub async fn new(user: Addr<User<K, C, S>>) -> Result<Self, Error> {
+    pub async fn new(user: Addr<User<K, C, S>>, ice_servers: Vec<RTCIceServer>) -> Result<Self, Error> {
         let (tx, rx) = tokio::sync::mpsc::channel(8);
-        let pc = create_peer(SubscriberPeerConnectionHandler {tx}).await?;
+        let pc = create_peer(SubscriberPeerConnectionHandler {tx}, ice_servers).await?;
         Ok(Self {
             user,
             pc,

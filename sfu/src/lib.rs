@@ -26,7 +26,7 @@ use crate::server::Key;
 use crate::user::{SignalMessage};
 
 
-pub async fn create_peer(handler: impl PeerConnectionEventHandler) -> Result<Box<dyn PeerConnection>, Error> {
+pub async fn create_peer(handler: impl PeerConnectionEventHandler, ice_servers: Vec<RTCIceServer>) -> Result<Box<dyn PeerConnection>, Error> {
     let mut m = MediaEngine::default();
     m.register_default_codecs()?;
     for uri in [
@@ -42,10 +42,7 @@ pub async fn create_peer(handler: impl PeerConnectionEventHandler) -> Result<Box
     }
     let registry = register_default_interceptors(Registry::new(), &mut m)?;
     let config = RTCConfigurationBuilder::default()
-        .with_ice_servers(vec![RTCIceServer {
-            urls: vec!["stun:stun.sipnet.ru:3478".to_owned()],
-            ..Default::default()
-        }])
+        .with_ice_servers(ice_servers)
         .build();
     let pc = PeerConnectionBuilder::new()
         .with_media_engine(m)

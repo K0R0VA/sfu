@@ -2,7 +2,7 @@ use std::{str::FromStr, sync::Arc};
 use rtc::rtp_transceiver::{ rtp_sender::RtpCodecKind};
 use tokio::sync::mpsc::Receiver;
 use uuid::Uuid;
-use webrtc::{media_stream::track_remote::TrackRemote, peer_connection::{PeerConnection, PeerConnectionEventHandler, RTCIceCandidateInit, RTCPeerConnectionIceEvent, RTCSessionDescription}};
+use webrtc::{media_stream::track_remote::TrackRemote, peer_connection::{PeerConnection, PeerConnectionEventHandler, RTCIceCandidateInit, RTCIceServer, RTCPeerConnectionIceEvent, RTCSessionDescription}};
 use crate::{SignalingClient, Storage, actor::{Actor, Addr, Ctx, StoppingExt}, audio_packet_forwarder::AudioPacketForwarder, create_peer, error::Error, keyframe_interceptor::{KeyframeInterceptor, RequestKeyframe}, quality_monitor::{QualityMonitor, QualityThresholds}, room::{AudioRouterStream, Codec, Room, RoomMessage, StreamQuality, VideoRouterStream}, rtp_packet_gateway_router::{AudioRouterContext, RtpPacketGatewayRouter, VideoRouterContext}, server::Key, simulcast_manager::SimulcastManager, user::{IceCandidate, MessageType, SignalMessage, Target, User, UserMessage}, video_packet_forwarder::VideoPacketForwarder};
 
 pub struct Publisher<K: Key, C: SignalingClient<UserKey = K>, S: Storage> {
@@ -19,10 +19,10 @@ pub struct Publisher<K: Key, C: SignalingClient<UserKey = K>, S: Storage> {
 const TARGET: Target = Target::Publisher;
 
 impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> Publisher<K, C, S> {
-    pub async fn new(user: Addr<User<K, C, S>>, room: Addr<Room<K, C, S>>, peer_id: K) -> Result<Self, Error> {
+    pub async fn new(user: Addr<User<K, C, S>>, room: Addr<Room<K, C, S>>, peer_id: K, ice_servers: Vec<RTCIceServer>) -> Result<Self, Error> {
         let (tx, rx) = tokio::sync::mpsc::channel(8);
         let handler =  PublisherPeerConnectionHandler { tx };
-        let pc = create_peer(handler).await?;
+        let pc = create_peer(handler, ice_servers).await?;
         let pc: Arc<dyn PeerConnection> = pc.into();
         let thresholds = QualityThresholds::default();
         let quality_monitor = QualityMonitor::new(

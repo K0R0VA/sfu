@@ -1,5 +1,9 @@
+use std::{io, path::Path};
+
 use serde::{Deserialize, Serialize};
+use tokio::{fs::File, io::{AsyncBufReadExt, BufReader}};
 use uuid::Uuid;
+use webrtc::peer_connection::RTCIceServer;
 use crate::{SignalingClient, Storage, actor::{Actor, Addr, Ctx, StoppingExt, WeakAddr}, audio_packet_forwarder::AudioPacketForwarder, error::Error, keyframe_interceptor::KeyframeInterceptor, publisher::{Publisher, PublisherMessage}, room::{Codec, Room, RoomMessage, StreamQuality}, rtp_packet_gateway_router::{AudioRouterContext, RouterContext, RouterWaker, RtpPacketGatewayRouter, RtpPacketMessage, VideoRouterContext}, server::Key, subscriber::{Subscriber, SubscriberMessage}, video_packet_forwarder::VideoPacketForwarder};
 
 
@@ -153,13 +157,34 @@ pub enum Target {
     Subscriber = 1
 }
 
+async fn read_lines_from_file_async<P: AsRef<Path>>(filename: P) -> io::Result<Vec<RTCIceServer>> {
+    // Открываем файл асинхронно
+    let file = File::open(filename).await?;
+    // Оборачиваем в асинхронный буферизированный читатель
+    let reader = BufReader::new(file);
+    
+    let mut lines = reader.lines();
+    let mut result = Vec::new();
+
+    // Построчно читаем файл в цикле
+    while let Some(line) = lines.next_line().await? {
+        result.push(RTCIceServer {
+            urls: vec![line],
+            ..Default::default()
+        });
+    }
+
+    Ok(result)
+}
+
 impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> User<K, C, S> {
     async fn initiate(&mut self, ctx: &Ctx<'_, Self>) -> Result<(), Error> {
         self.room.send(RoomMessage::Join { peer_id: self.id, addr: ctx.addr.clone() }).await?;
         let addr = ctx.addr.clone();
-        let subscriber = Subscriber::new(addr.clone()).await?.start();
+        let ice_servers = read_lines_from_file_async("ice_servers.txt").await.map_err(|e| Error::SystemError { message: e.to_string().into() })?;
+        let subscriber = Subscriber::new(addr.clone(), ice_servers.clone()).await?.start();
         self.subscriber.set_addr(subscriber);
-        let publisher = Publisher::new(addr.clone(),  self.room.clone(), self.id).await?.start();
+        let publisher = Publisher::new(addr.clone(),  self.room.clone(), self.id, ice_servers.clone()).await?.start();
         self.publisher.set_addr(publisher);
         Ok(())
     }
