@@ -70,7 +70,7 @@ impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> Actor for Subscriber<K
                 }
             }
             SubscriberMessage::IceCandidate { candidate } => {
-                let message = SignalMessage::Rtc {
+                let message = SignalMessage {
                     target: TARGET,
                     message_type: MessageType::Candidate { candidate }
                 };
@@ -122,7 +122,7 @@ impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> Subscriber<K, C, S> {
                 self.pc.set_remote_description(offer_desc).await?;
                 let answer = self.pc.create_answer(None).await?;
                 self.pc.set_local_description(answer.clone()).await?;
-                let message = SignalMessage::Rtc {
+                let message = SignalMessage {
                     target: Target::Subscriber,
                     message_type: MessageType::Answer {sdp: answer.sdp }
                 };
@@ -155,7 +155,7 @@ impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> Subscriber<K, C, S> {
         }
         let offer = self.pc.create_offer(None).await?;
         self.pc.set_local_description(offer.clone()).await?;
-        let message = SignalMessage::Rtc {
+        let message = SignalMessage {
             target: TARGET,
             message_type: MessageType::Offer { sdp: offer.sdp }
         };

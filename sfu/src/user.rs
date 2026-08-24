@@ -32,11 +32,10 @@ pub struct SessionParams {
 }
 
 pub enum UserMessage<K: Key, C: SignalingClient> {
-    NewNeighbour(K),
     Reconnect(C),
-    SignalMessage(SignalMessage<K>),
+    SignalMessage(SignalMessage),
     SwitchQualityLayer { quality: StreamQuality },
-    SyncMessage(SyncMessage<K>),
+    SyncMessage(SyncMessage),
     ConnectAudio(ConnectionRequest<K, AudioPacketForwarder, AudioRouterContext>),
     ConnectVideo { 
         request: ConnectionRequest<K, VideoPacketForwarder, VideoRouterContext>, 
@@ -50,8 +49,8 @@ pub enum UserMessage<K: Key, C: SignalingClient> {
     RoomClosed
 }
 
-pub enum SyncMessage<K> {
-    Message(SignalMessage<K>),
+pub enum SyncMessage {
+    Message(SignalMessage),
     Close,
     Error(String)
 }
@@ -72,9 +71,6 @@ impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> Actor for User<K, C, S
     type Message = UserMessage<K, C>;
     async fn handle(&mut self, ctx: &mut Ctx<'_, Self>, msg: Self::Message) {
         match msg {
-            UserMessage::NewNeighbour(id) => {
-                self.send_ws_message(SignalMessage::PeerJoin { peer_id: id }).await.ok_or_terminate(ctx);
-            }
             UserMessage::Reconnect(c) => {
                 self.signaling_client = c;
             }
@@ -117,15 +113,10 @@ impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> Actor for User<K, C, S
 }
 
 #[derive(Deserialize, Serialize, Debug)]
-#[serde(tag = "kind", rename_all = "snake_case")] 
-pub enum SignalMessage<K> {
-    PeerJoin { peer_id: K },
-    Rtc {
-        target: Target,
-        #[serde(flatten)] 
-        message_type: MessageType,
-    },
-    PeerLeft { peer_id: K },
+pub struct SignalMessage {
+    pub target: Target,
+    #[serde(flatten)] 
+    pub message_type: MessageType,
 }
 
 
@@ -188,7 +179,7 @@ impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> User<K, C, S> {
         self.publisher.set_addr(publisher);
         Ok(())
     }
-    async fn handle_ws_message(&mut self, ctx: &mut Ctx<'_, Self>, message: SyncMessage<K>) -> Result<(), Error> {
+    async fn handle_ws_message(&mut self, ctx: &mut Ctx<'_, Self>, message: SyncMessage) -> Result<(), Error> {
         let message = match message {
             SyncMessage::Close => {
                 self.stop(ctx).await;
@@ -198,7 +189,7 @@ impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> User<K, C, S> {
             SyncMessage::Error(e) => return Err(Error::SystemError { message: e.into() })
         };
         match message {
-            SignalMessage::Rtc { target, message_type } => {
+            SignalMessage { target, message_type } => {
                 match target {
                     Target::Publisher => {
                         let _ = self.publisher.try_send(PublisherMessage::Websocket(message_type)).await;
@@ -212,7 +203,7 @@ impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> User<K, C, S> {
         }
         Ok(())
     }
-    async fn send_ws_message(&mut self, msg: SignalMessage<K>) -> Result<(), Error> {
+    async fn send_ws_message(&mut self, msg: SignalMessage) -> Result<(), Error> {
         self.signaling_client.send(msg.into())
             .await
             .map_err(|e| Error::SystemError { message: e.to_string().into() })?;
@@ -220,9 +211,6 @@ impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> User<K, C, S> {
     }
     async fn unsubscribe(&mut self, peer_id: K) -> Result<(), Error> {
         let _ = self.subscriber.try_send(SubscriberMessage::Unsubscribe { peer_id }).await;
-        self.signaling_client.send(SignalMessage::PeerLeft { peer_id }.into())
-            .await
-            .map_err(|e| Error::SystemError { message: e.to_string().into() })?;
         Ok(())
     }
 }

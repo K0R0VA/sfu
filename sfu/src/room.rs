@@ -243,9 +243,6 @@ impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> Room<K, C, S> {
     }
     async fn add_peer(&mut self, peer_id: K, user: Addr<User<K, C, S>>) -> Result<(), Error> {
         if self.peers.contains_key(&peer_id) { return Ok(()); }
-        for Peer { user , .. } in self.peers.values() {
-            user.send(UserMessage::NewNeighbour(peer_id)).await?;
-        }
         self.peers.insert(peer_id, Peer { user, video_streams: HashMap::with_capacity(3), audio_steam: None });
         Ok(())
     }   

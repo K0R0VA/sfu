@@ -58,7 +58,7 @@ pub async fn create_peer(handler: impl PeerConnectionEventHandler, ice_servers: 
 
 pub trait SignalingClient: Send + 'static {
     type UserKey: Key;
-    type Item: From<SignalMessage<Self::UserKey>>;                               
+    type Item: From<SignalMessage>;                               
     type Error: std::error::Error + Debug;
     fn send(&mut self, message: Self::Item) -> impl Future<Output = Result<(), Self::Error>> + Send;
 }

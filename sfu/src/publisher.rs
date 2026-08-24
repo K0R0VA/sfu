@@ -75,7 +75,7 @@ impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> Actor for Publisher<K,
                 self.handle_ws_message(message).await.ok_or_terminate(ctx);
             }
             PublisherMessage::IceCandidate { candidate } => {
-               let message = SignalMessage::Rtc {
+               let message = SignalMessage {
                     target: TARGET,
                     message_type: MessageType::Candidate { candidate }
                 };
@@ -125,7 +125,7 @@ impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> Publisher<K,C, S> {
                 self.pc.set_remote_description(offer_desc).await?;
                 let answer = self.pc.create_answer(None).await?;
                 self.pc.set_local_description(answer.clone()).await?;
-                let message = SignalMessage::Rtc {
+                let message = SignalMessage {
                     target: Target::Publisher,
                     message_type: MessageType::Answer {sdp: answer.sdp }
                 };
@@ -136,7 +136,7 @@ impl<K: Key, C: SignalingClient<UserKey = K>, S: Storage> Publisher<K,C, S> {
                 self.pc.set_remote_description(offer_desc).await?;
                 let answer = self.pc.create_answer(None).await?;    
                 self.pc.set_local_description(answer.clone()).await?;                  
-                let message = SignalMessage::Rtc {                  
+                let message = SignalMessage {                  
                     target: Target::Publisher,
                     message_type: MessageType::Answer {sdp: answer.sdp } 
                 };
